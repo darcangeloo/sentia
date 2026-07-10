@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+.env
+
+# Database e Storage
+/storage/
+*.db
+*.sqlite3
+pgdata/
+/docs/
+how-to-start.txt
+
+# IDE e Sistemi
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+init_db.py
+register_user.py

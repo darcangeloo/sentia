@@ -1,0 +1,31 @@
+# === Backend API ===
+fastapi
+uvicorn[standard]
+pydantic-settings
+
+# === Database ===
+sqlalchemy[asyncio]
+asyncpg
+psycopg2-binary
+psycopg2
+
+# === Autenticazione e Sicurezza ===
+cryptography
+python-jose[cryptography]
+passlib[bcrypt]
+bcrypt
+
+# === LLM e AI ===
+openai
+google-generativeai
+huggingface_hub
+
+# === Document Processing ===
+pdfplumber
+langchain-text-splitters
+
+# === Utilities ===
+python-multipart
+aiofiles
+python-dotenv
+numpy
