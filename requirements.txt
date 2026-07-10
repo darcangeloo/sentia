@@ -19,7 +19,7 @@ bcrypt
 openai
 google-generativeai
 huggingface_hub
-
+sentence-transformers
 # === Document Processing ===
 pdfplumber
 langchain-text-splitters
