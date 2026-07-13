@@ -287,7 +287,8 @@ async def chat(body: ChatRequest, tenant: dict = Depends(get_current_tenant), db
             await db.commit()
             
     # Esegui il pipeline RAG
-    rag_response = await run_rag_pipeline(tenant, body.query, db)
+    tenant_with_chat = {**tenant, "chat_id": conversation_uuid}
+    rag_response = await run_rag_pipeline(tenant_with_chat, body.query, db)
     
     # Salva la risposta dell'assistente con le fonti
     assistant_msg = ChatMessage(
@@ -362,7 +363,8 @@ async def chat_stream(body: ChatRequest, tenant: dict = Depends(get_current_tena
         full_answer = []
         sources_data = []
         
-        async for event in run_rag_pipeline_stream(tenant, body.query, db):
+        tenant_with_chat = {**tenant, "chat_id": conversation_uuid}
+        async for event in run_rag_pipeline_stream(tenant_with_chat, body.query, db):
             if event["type"] == "sources":
                 sources_data = event["data"]
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"

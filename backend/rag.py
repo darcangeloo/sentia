@@ -281,7 +281,7 @@ async def run_rag_pipeline(tenant: dict, user_query: str, db: AsyncSession) -> d
         Dict con 'answer' (la risposta LLM) e 'sources' (le fonti utilizzate)
     """
     rows = await _retrieve_hybrid(tenant, user_query, db)
-    history = await get_recent_messages(db, tenant["chat_id"], limit=6)
+    history = await get_recent_messages(db, tenant.get("chat_id"), limit=6)
 
     if not rows:
         return {
@@ -322,7 +322,7 @@ async def run_rag_pipeline_stream(tenant: dict, user_query: str, db: AsyncSessio
 
         yield {"type": "sources", "data": sources}
 
-        history = await get_recent_messages(db, tenant["chat_id"], limit=6)
+        history = await get_recent_messages(db, tenant.get("chat_id"), limit=6)
 
         async for token in generate_answer_stream_async(user_query, context, history=history, tenant=tenant, db=db):
             yield {"type": "token", "data": token}
