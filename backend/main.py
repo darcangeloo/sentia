@@ -587,7 +587,7 @@ async def save_llm_settings(
 ):
     """Salva o aggiorna le credenziali di un provider LLM. Valida la connessione prima di salvare."""
     provider = body.provider.lower()
-    if provider not in ["openai", "anthropic", "ollama", "gemini"]:
+    if provider not in ["openai", "anthropic", "gemini"]:
         raise HTTPException(status_code=400, detail="Provider non supportato")
     
     user_uuid = uuid.UUID(tenant["user_id"])
@@ -710,35 +710,6 @@ async def delete_llm_settings(
     logger.info(f"Configurazione {provider} eliminata per utente {tenant['user_id']}")
     return {"status": "success"}
 
-
-@app.get("/v1/settings/llm/ollama-models")
-async def get_ollama_models(
-    url: str = "http://localhost:11434",
-    tenant: dict = Depends(get_current_tenant)
-):
-    """Chiama il server Ollama locale/custom per ottenere la lista dei modelli installati."""
-    clean_url = url.rstrip("/")
-    if clean_url.endswith("/v1"):
-        clean_url = clean_url[:-3]
-        
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            res = await client.get(f"{clean_url}/api/tags")
-            if res.status_code == 200:
-                data = res.json()
-                models = [m["name"] for m in data.get("models", [])]
-                return {"models": models}
-            
-            res2 = await client.get(f"{clean_url}/v1/models")
-            if res2.status_code == 200:
-                data = res2.json()
-                models = [m["id"] for m in data.get("data", [])]
-                return {"models": models}
-                
-            raise HTTPException(status_code=res.status_code, detail="Impossibile recuperare i modelli da Ollama")
-    except Exception as e:
-        logger.warning(f"Errore recupero modelli Ollama da {url}: {e}")
-        raise HTTPException(status_code=400, detail=f"Errore connessione a Ollama: {str(e)}")
 
 
 # === Serve Frontend Statico ===

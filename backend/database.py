@@ -137,7 +137,7 @@ class UserLLMSetting(Base):
     id = Column(UUID(as_uuid=True), primary_key=True)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
-    provider = Column(String(50), nullable=False)  # 'openai', 'anthropic', 'ollama'
+    provider = Column(String(50), nullable=False)  # 'openai', 'anthropic', 'gemini'
     encrypted_api_key = Column(LargeBinary, nullable=True)
     base_url = Column(String(500), nullable=True)
     model = Column(String(255), nullable=False)

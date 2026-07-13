@@ -94,12 +94,6 @@ const dom = {
     geminiModel: $('#gemini-model'),
     geminiDeleteBtn: $('#gemini-delete-btn'),
     geminiStatusBadge: $('#gemini-status-badge'),
-
-    ollamaUrl: $('#ollama-url'),
-    ollamaModel: $('#ollama-model'),
-    ollamaDeleteBtn: $('#ollama-delete-btn'),
-    ollamaStatusBadge: $('#ollama-status-badge'),
-    btnRefreshOllama: $('#btn-refresh-ollama'),
 };
 
 
@@ -185,13 +179,6 @@ function setupEventListeners() {
             deleteProviderSettings(provider);
         });
     });
-    
-    // Refresh local Ollama models
-    dom.btnRefreshOllama.addEventListener('click', () => {
-        const url = dom.ollamaUrl.value.trim();
-        loadOllamaModels(url);
-    });
-    
     // Logout
     dom.btnLogout.addEventListener('click', handleLogout);
 }
@@ -335,9 +322,6 @@ function setView(view) {
         dom.chatView.classList.add('hidden');
         dom.settingsView.classList.remove('hidden');
         dom.btnSettings.style.color = 'var(--accent-primary-light)';
-        
-        // When opening settings, trigger models reload for ollama
-        loadOllamaModels(dom.ollamaUrl.value);
     }
 }
 
@@ -1003,27 +987,7 @@ function renderLLMSettings() {
                 if (s.has_api_key) dom.anthropicApiKey.value = '••••••••';
                 dom.anthropicBaseUrl.value = s.base_url || '';
                 dom.anthropicModel.value = s.model || 'claude-opus-4.8';
-            } else if (prov === 'ollama') {
-                dom.ollamaUrl.value = s.base_url || 'http://localhost:11434';
-    
-                // Add model option if not exists and select it
-                const modelSelect = dom.ollamaModel;
-                let exists = false;
-                for (let i = 0; i < modelSelect.options.length; i++) {
-                    if (modelSelect.options[i].value === s.model) {
-                        exists = true;
-                        break;
-                    }
-                }
-                if (!exists) {
-                    const opt = document.createElement('option');
-                    opt.value = s.model;
-                    opt.textContent = s.model;
-                    modelSelect.appendChild(opt);
-                }
-                modelSelect.value = s.model;
-            }
-            else if (prov === 'gemini') {
+            } else if (prov === 'gemini') {
                 if (s.has_api_key) dom.geminiApiKey.value = '••••••••';
                 dom.geminiBaseUrl.value = s.base_url || '';
                 dom.geminiModel.value = s.model || 'gemini-3.1-pro';
@@ -1055,10 +1019,6 @@ async function saveProviderSettings(provider) {
         payload.api_key = dom.geminiApiKey.value.trim();
         payload.base_url = dom.geminiBaseUrl.value.trim() || null;
         payload.model = dom.geminiModel.value;
-    } else if (provider === 'ollama') {
-        payload.base_url = dom.ollamaUrl.value.trim();
-        payload.model = dom.ollamaModel.value;
-        payload.api_key = null; // Ollama non necessita di api key locale
     }
     
     try {
@@ -1104,51 +1064,6 @@ async function deleteProviderSettings(provider) {
     }
 }
 
-async function loadOllamaModels(url) {
-    if (!url) return;
-    
-    dom.btnRefreshOllama.classList.add('loading');
-    dom.btnRefreshOllama.disabled = true;
-    
-    try {
-        const res = await apiFetch(`/v1/settings/llm/ollama-models?url=${encodeURIComponent(url)}`);
-        const data = await res.json();
-        
-        const selectElement = dom.ollamaModel;
-        const previousValue = selectElement.value;
-        selectElement.innerHTML = '';
-        
-        if (data.models && data.models.length > 0) {
-            data.models.forEach(model => {
-                const opt = document.createElement('option');
-                opt.value = model;
-                opt.textContent = model;
-                selectElement.appendChild(opt);
-            });
-            
-            // Re-seleziona il precedente se esiste nel nuovo set
-            if (data.models.includes(previousValue)) {
-                selectElement.value = previousValue;
-            }
-            showToast('Modelli Ollama aggiornati', 'success');
-        } else {
-            showToast('Nessun modello trovato sul server Ollama', 'warning');
-        }
-    } catch (err) {
-        console.warn('Impossibile caricare modelli da Ollama URL:', url);
-        // Fallback default options
-        const selectElement = dom.ollamaModel;
-        if (selectElement.options.length === 0) {
-            const opt = document.createElement('option');
-            opt.value = 'deepseek-r1:14b';
-            opt.textContent = 'deepseek-r1:14b (fallback)';
-            selectElement.appendChild(opt);
-        }
-    } finally {
-        dom.btnRefreshOllama.classList.remove('loading');
-        dom.btnRefreshOllama.disabled = false;
-    }
-}
 
 
 // ============================================================

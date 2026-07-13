@@ -28,80 +28,9 @@ Regole fondamentali:
 6. Non inventare mai informazioni non presenti nel contesto"""
 
 
-def _get_client() -> OpenAI:
-    """Restituisce il client OpenAI singleton per le chiamate LLM di fallback."""
-    global _client
-    if _client is None:
-        _client = OpenAI(
-            base_url=settings.OLLAMA_BASE_URL,
-            api_key=settings.OLLAMA_API_KEY,
-            timeout=300.0,
-        )
-        logger.info(f"Client LLM di fallback inizializzato (model={settings.LLM_MODEL})")
-    return _client
-
-
-# --- Funzioni Sincrone Retrocompatibili ---
-def generate_answer(user_query: str, context: str) -> str:
-    """Genera una risposta usando il contesto documentale (fallback sincrono)."""
-    client = _get_client()
-    user_message = f"""Contesto documentale aziendale:
----
-{context}
----
-
-Domanda del dipendente: {user_query}
-
-Rispondi basandoti esclusivamente sul contesto fornito sopra."""
-    
-    try:
-        response = client.chat.completions.create(
-            model=settings.LLM_MODEL,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_message}
-            ],
-            temperature=0.1
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        logger.error(f"Errore generazione risposta LLM (sync): {e}")
-        raise
-
-
-def generate_answer_stream(user_query: str, context: str):
-    """Genera una risposta in streaming (fallback sincrono)."""
-    client = _get_client()
-    user_message = f"""Contesto documentale aziendale:
----
-{context}
----
-
-Domanda del dipendente: {user_query}
-
-Rispondi basandoti esclusivamente sul contesto fornito sopra."""
-    
-    try:
-        stream = client.chat.completions.create(
-            model=settings.LLM_MODEL,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_message}
-            ],
-            temperature=0.1,
-            stream=True,
-        )
-        for chunk in stream:
-            if chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
-    except Exception as e:
-        logger.error(f"Errore streaming LLM (sync): {e}")
-        yield f"\n\n⚠️ Errore nella generazione della risposta: {str(e)}"
-
-
 # --- Supporto Multi-Provider Asincrono ---
-async def get_active_provider_config(tenant: dict | None, db: AsyncSession | None) -> dict:
-    """Recupera la configurazione del provider LLM attivo per l'utente, o restituisce il default da .env."""
+async def get_active_provider_config(tenant: dict | None, db: AsyncSession | None) -> dict | None:
+    """Recupera la configurazione del provider LLM attivo per l'utente, o restituisce None."""
     if tenant and db:
         try:
             user_uuid = uuid.UUID(tenant["user_id"]) if isinstance(tenant["user_id"], str) else tenant["user_id"]
@@ -126,13 +55,7 @@ async def get_active_provider_config(tenant: dict | None, db: AsyncSession | Non
         except Exception as e:
             logger.error(f"Errore nel recupero della configurazione LLM utente: {e}", exc_info=True)
             
-    # Fallback default (.env settings)
-    return {
-        "provider": "ollama",
-        "api_key": settings.OLLAMA_API_KEY,
-        "base_url": settings.OLLAMA_BASE_URL,
-        "model": settings.LLM_MODEL
-    }
+    return None
 
 
 async def generate_openai_response(model: str, api_key: str, base_url: str | None, messages: list, system: str) -> str:
@@ -159,30 +82,6 @@ async def generate_openai_stream(model: str, api_key: str, base_url: str | None,
         if chunk.choices[0].delta.content:
             yield chunk.choices[0].delta.content
 
-
-async def generate_ollama_response(model: str, base_url: str | None, messages: list, system: str) -> str:
-    """Invia una richiesta non-stream all'API di Ollama."""
-    client = AsyncOpenAI(api_key="ollama", base_url=base_url or "http://localhost:11434/v1", timeout=300.0)
-    response = await client.chat.completions.create(
-        model=model,
-        messages=[{"role": "system", "content": system}] + messages,
-        temperature=0.1
-    )
-    return response.choices[0].message.content
-
-
-async def generate_ollama_stream(model: str, base_url: str | None, messages: list, system: str):
-    """Invia una richiesta stream all'API di Ollama."""
-    client = AsyncOpenAI(api_key="ollama", base_url=base_url or "http://localhost:11434/v1", timeout=300.0)
-    stream = await client.chat.completions.create(
-        model=model,
-        messages=[{"role": "system", "content": system}] + messages,
-        temperature=0.1,
-        stream=True
-    )
-    async for chunk in stream:
-        if chunk.choices[0].delta.content:
-            yield chunk.choices[0].delta.content
 
 
 async def generate_anthropic(model: str, api_key: str, base_url: str | None, messages: list, system: str) -> str:
@@ -304,6 +203,11 @@ async def generate_gemini_stream(model: str, api_key: str, messages: list, syste
 async def generate_answer_async(user_query: str, context: str, history: str = "",tenant: dict | None = None, db: AsyncSession | None = None) -> str:
     """Genera una risposta usando il provider LLM configurato (async)."""
     config = await get_active_provider_config(tenant, db)
+    if not config:
+        raise HTTPException(
+            status_code=400,
+            detail="Nessun provider LLM attivo. Configura ed attiva OpenAI, Anthropic o Gemini nelle impostazioni."
+        )
     provider = config["provider"]
     model = config["model"]
     user_message = f"""
@@ -328,8 +232,6 @@ async def generate_answer_async(user_query: str, context: str, history: str = ""
     try:
         if provider == "openai":
             return await generate_openai_response(model, config["api_key"], config["base_url"], messages, SYSTEM_PROMPT)
-        elif provider == "ollama":
-            return await generate_ollama_response(model, config["base_url"], messages, SYSTEM_PROMPT)
         elif provider == "anthropic":
             return await generate_anthropic(model, config["api_key"], config["base_url"], messages, SYSTEM_PROMPT)
         elif provider == "gemini":
@@ -344,6 +246,9 @@ async def generate_answer_async(user_query: str, context: str, history: str = ""
 async def generate_answer_stream_async(user_query: str, context: str, history: str = "", tenant: dict | None = None, db: AsyncSession | None = None):
     """Genera una risposta in streaming usando il provider LLM configurato (async)."""
     config = await get_active_provider_config(tenant, db)
+    if not config:
+        yield "⚠️ Nessun provider LLM attivo. Configura ed attiva OpenAI, Anthropic o Gemini nelle impostazioni."
+        return
     provider = config["provider"]
     model = config["model"]
     user_message = f"""
@@ -369,9 +274,6 @@ async def generate_answer_stream_async(user_query: str, context: str, history: s
         if provider == "openai":
             async for token in generate_openai_stream(model, config["api_key"], config["base_url"], messages, SYSTEM_PROMPT):
                 yield token
-        elif provider == "ollama":
-            async for token in generate_ollama_stream(model, config["base_url"], messages, SYSTEM_PROMPT):
-                yield token
         elif provider == "anthropic":
             async for token in generate_anthropic_stream(model, config["api_key"], config["base_url"], messages, SYSTEM_PROMPT):
                 yield token
@@ -394,19 +296,6 @@ async def validate_credentials(provider: str, api_key: str | None, base_url: str
             client = AsyncOpenAI(api_key=api_key, base_url=base_url or None, timeout=10.0)
             await client.models.list()
             return True
-            
-        elif provider == "ollama":
-            url = (base_url or "http://localhost:11434").rstrip("/")
-            if url.endswith("/v1"):
-                url = url[:-3]
-            
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                res = await client.get(f"{url}/api/tags")
-                if res.status_code == 200:
-                    return True
-                res2 = await client.get(f"{url}/v1/models")
-                return res2.status_code == 200
-                
         elif provider == "anthropic":
             if not api_key:
                 return False

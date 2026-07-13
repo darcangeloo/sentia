@@ -322,7 +322,9 @@ async def run_rag_pipeline_stream(tenant: dict, user_query: str, db: AsyncSessio
 
         yield {"type": "sources", "data": sources}
 
-        async for token in generate_answer_stream_async(user_query, context, tenant, db):
+        history = await get_recent_messages(db, tenant["chat_id"], limit=6)
+
+        async for token in generate_answer_stream_async(user_query, context, history=history, tenant=tenant, db=db):
             yield {"type": "token", "data": token}
 
         yield {"type": "done"}

@@ -1484,25 +1484,7 @@ body {
   transition: all var(--transition-fast);
 }
 
-/* Ollama Select Row styling */
-.ollama-select-row {
-  display: flex;
-}
 
-.ollama-select-row select {
-  border-top-right-radius: 0 !important;
-  border-bottom-right-radius: 0 !important;
-}
-
-.ollama-select-row button {
-  border-top-left-radius: 0 !important;
-  border-bottom-left-radius: 0 !important;
-  border-left: none !important;
-}
-
-.ollama-select-row button:hover {
-  background: var(--bg-tertiary) !important;
-}
 
 /* === Hidden Utilities === */
 .hidden {

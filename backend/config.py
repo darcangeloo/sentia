@@ -21,10 +21,7 @@ class Settings(BaseSettings):
     
     # === Crittografia ===
     MASTER_KEY: str
-    
-    # === Ollama / LLM ===
-    OLLAMA_BASE_URL: str = "http://localhost:11434/v1"
-    OLLAMA_API_KEY: str = "ollama"
+    # === LLM Default ===
     LLM_MODEL: str = "deepseek-r1:14b"
     EMBEDDING_MODEL: str = "BAAI/bge-m3"
     HF_TOKEN: str 
