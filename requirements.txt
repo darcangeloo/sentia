@@ -7,18 +7,17 @@ pydantic-settings
 sqlalchemy[asyncio]
 asyncpg
 psycopg2-binary
-psycopg2
 
 # === Autenticazione e Sicurezza ===
 cryptography
 python-jose[cryptography]
-passlib[bcrypt]
 bcrypt
 
 # === LLM e AI ===
 openai
 google-generativeai
 huggingface_hub
+httpx
 
 # === Document Processing ===
 pdfplumber

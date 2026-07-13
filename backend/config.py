@@ -21,20 +21,27 @@ class Settings(BaseSettings):
     
     # === Crittografia ===
     MASTER_KEY: str
-    # === LLM Default ===
-    LLM_MODEL: str = "deepseek-r1:14b"
+    # === Embedding ===
     EMBEDDING_MODEL: str = "BAAI/bge-m3"
-    HF_TOKEN: str 
-    
+    EMBEDDING_CONCURRENCY: int = 5  # Chiamate parallele max verso l'API HuggingFace
+    HF_TOKEN: str
+
     # === RAG Pipeline ===
     CHUNK_SIZE: int = 1000
     CHUNK_OVERLAP: int = 200
     MAX_CHUNKS_PER_QUERY: int = 10
-    SIMILARITY_THRESHOLD: float = 0.75  
-    
+    SIMILARITY_THRESHOLD: float = 0.75
+
+    # === Upload ===
+    MAX_UPLOAD_SIZE_MB: int = 25
+
+    # === Rate Limiting (login) ===
+    LOGIN_RATE_LIMIT_ATTEMPTS: int = 5
+    LOGIN_RATE_LIMIT_WINDOW_SECONDS: int = 300
+
     # === Logging ===
     LOG_LEVEL: str = "INFO"
-    
+
     # === Applicazione ===
     APP_TITLE: str = "Sentia Assistant API"
     CORS_ORIGINS: str = "*"  # In produzione, restringere ai domini specifici

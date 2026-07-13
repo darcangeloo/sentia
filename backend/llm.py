@@ -137,67 +137,100 @@ async def generate_anthropic_stream(model: str, api_key: str, base_url: str | No
                         pass
 
 
-async def generate_gemini(model: str, api_key: str, messages: list, system: str) -> str:
-    """Invia una richiesta non-stream all'API di Google Gemini."""
-    try:
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        
-        client = genai.GenerativeModel(model)
-        
-        # Prepara il contesto completo come primo messaggio dell'utente
-        user_content = ""
-        if messages:
-            for msg in messages:
-                if msg["role"] == "user":
-                    user_content = msg["content"]
-                    break
-        
-        response = client.generate_content(
-            [system] + [user_content] if user_content else [system],
-            generation_config=genai.types.GenerationConfig(
-                temperature=0.1,
-                max_output_tokens=2048
-            )
+def _extract_gemini_user_content(messages: list) -> str:
+    for msg in messages:
+        if msg["role"] == "user":
+            return msg["content"]
+    return ""
+
+
+def _generate_gemini_sync(model: str, api_key: str, messages: list, system: str) -> str:
+    import google.generativeai as genai
+    genai.configure(api_key=api_key)
+    client = genai.GenerativeModel(model)
+
+    user_content = _extract_gemini_user_content(messages)
+    contents = [system, user_content] if user_content else [system]
+
+    response = client.generate_content(
+        contents,
+        generation_config=genai.types.GenerationConfig(
+            temperature=0.1,
+            max_output_tokens=2048
         )
-        
-        return response.text
+    )
+    return response.text
+
+
+def _validate_gemini_sync(api_key: str, test_model: str):
+    import google.generativeai as genai
+    genai.configure(api_key=api_key)
+    client = genai.GenerativeModel(test_model)
+    return client.generate_content("test", stream=False)
+
+
+async def generate_gemini(model: str, api_key: str, messages: list, system: str) -> str:
+    """Invia una richiesta non-stream all'API di Google Gemini.
+
+    L'SDK di google-generativeai è sincrono: eseguito in un thread separato
+    per non bloccare l'event loop durante l'intera chiamata di rete.
+    """
+    try:
+        return await asyncio.to_thread(_generate_gemini_sync, model, api_key, messages, system)
     except Exception as e:
         logger.error(f"Errore Gemini non-stream: {e}")
         raise
 
 
 async def generate_gemini_stream(model: str, api_key: str, messages: list, system: str):
-    """Invia una richiesta stream all'API di Google Gemini."""
+    """Invia una richiesta stream all'API di Google Gemini.
+
+    L'iterazione sincrona sui chunk viene eseguita in un thread produttore e
+    inoltrata all'event loop tramite una coda, per non bloccarlo mentre
+    attende ogni singolo chunk dalla rete.
+    """
     try:
         import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        
-        client = genai.GenerativeModel(model)
-        
-        # Prepara il contesto completo come primo messaggio dell'utente
-        user_content = ""
-        if messages:
-            for msg in messages:
-                if msg["role"] == "user":
-                    user_content = msg["content"]
-                    break
-        
-        stream = client.generate_content(
-            [system] + [user_content] if user_content else [system],
-            generation_config=genai.types.GenerationConfig(
-                temperature=0.1,
-                max_output_tokens=2048
-            ),
-            stream=True
-        )
-        
-        for chunk in stream:
-            if chunk.text:
-                yield chunk.text
+
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+        _DONE = object()
+
+        def _produce():
+            try:
+                genai.configure(api_key=api_key)
+                client = genai.GenerativeModel(model)
+                user_content = _extract_gemini_user_content(messages)
+                contents = [system, user_content] if user_content else [system]
+
+                stream = client.generate_content(
+                    contents,
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=0.1,
+                        max_output_tokens=2048
+                    ),
+                    stream=True
+                )
+                for chunk in stream:
+                    if chunk.text:
+                        loop.call_soon_threadsafe(queue.put_nowait, chunk.text)
+            except Exception as exc:
+                loop.call_soon_threadsafe(queue.put_nowait, exc)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, _DONE)
+
+        loop.run_in_executor(None, _produce)
+
+        while True:
+            item = await queue.get()
+            if item is _DONE:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item
     except Exception as e:
-        logger.error(f"Errore Gemini stream: {e}")
-        yield f"\n\n⚠️ Errore comunicazione con Gemini: {str(e)}"
+        logger.error(f"Errore Gemini stream: {e}", exc_info=True)
+        yield "\n\nErrore di comunicazione con Gemini. Riprova più tardi."
 
 
 async def generate_answer_async(user_query: str, context: str, history: str = "",tenant: dict | None = None, db: AsyncSession | None = None) -> str:
@@ -238,9 +271,11 @@ async def generate_answer_async(user_query: str, context: str, history: str = ""
             return await generate_gemini(model, config["api_key"], messages, SYSTEM_PROMPT)
         else:
             raise Exception(f"Provider LLM non supportato: {provider}")
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Errore durante la chiamata LLM ({provider}): {e}")
-        raise HTTPException(status_code=502, detail=f"Errore comunicazione {provider}: {str(e)}")
+        logger.error(f"Errore durante la chiamata LLM ({provider}): {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Errore di comunicazione con il provider {provider}. Riprova più tardi.")
 
 
 async def generate_answer_stream_async(user_query: str, context: str, history: str = "", tenant: dict | None = None, db: AsyncSession | None = None):
@@ -283,8 +318,8 @@ async def generate_answer_stream_async(user_query: str, context: str, history: s
         else:
             yield f"\n\n⚠️ Provider LLM non supportato: {provider}"
     except Exception as e:
-        logger.error(f"Errore nello streaming LLM ({provider}): {e}")
-        yield f"\n\n⚠️ Errore comunicazione {provider}: {str(e)}"
+        logger.error(f"Errore nello streaming LLM ({provider}): {e}", exc_info=True)
+        yield f"\n\nErrore di comunicazione con il provider {provider}. Riprova più tardi."
 
 
 async def validate_credentials(provider: str, api_key: str | None, base_url: str | None, model: str) -> bool:
@@ -325,13 +360,8 @@ async def validate_credentials(provider: str, api_key: str | None, base_url: str
             if not api_key:
                 return False
             try:
-                import google.generativeai as genai
-                genai.configure(api_key=api_key)
-                # Use a valid model for testing
                 test_model = model or "gemini-1.5-flash"
-                client = genai.GenerativeModel(test_model)
-                # Send a simple test message to validate the key
-                response = client.generate_content("test", stream=False)
+                response = await asyncio.to_thread(_validate_gemini_sync, api_key, test_model)
                 return response is not None
             except Exception as e:
                 logger.warning(f"Validazione Gemini fallita ({model}): {e}")

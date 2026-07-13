@@ -1,19 +1,24 @@
 import os
+import re
+import time
 import uuid
+import asyncio
 import json
 import logging
 import aiofiles
-import httpx
+from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 from datetime import datetime
-from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, status, BackgroundTasks
+from fastapi import FastAPI, Depends, Request, UploadFile, File, HTTPException, status, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import text as sqlalchemy_text
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from backend.database import AsyncSessionLocal, Company, User, Document, ChatMessage, Conversation, UserLLMSetting
 from backend.auth import create_access_token, verify_password, get_current_tenant
 from backend.rag import process_pdf_and_chunk, run_rag_pipeline, run_rag_pipeline_stream
@@ -29,49 +34,104 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Ciclo di vita dell'app: migrazione DB all'avvio, chiusura pulita del
+    connection pool allo spegnimento (graceful shutdown)."""
+    from backend.database import verify_and_migrate_db, engine
+    await verify_and_migrate_db()
+    yield
+    await engine.dispose()
+
+
 # === Applicazione FastAPI ===
 app = FastAPI(
     title=settings.APP_TITLE,
     description="API Sentia",
     version="2.0.0",
+    lifespan=lifespan,
 )
 
-
-@app.on_event("startup")
-async def startup_event():
-    from backend.database import verify_and_migrate_db
-    await verify_and_migrate_db()
-
 # === Middleware CORS ===
+# allow_credentials=True è incompatibile con l'origine wildcard "*" (i browser
+# la rifiutano comunque): se CORS_ORIGINS non è configurato esplicitamente,
+# disattiviamo le credenziali invece di lasciare una configurazione invalida.
+_cors_origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
+_cors_wildcard = "*" in _cors_origins
+if _cors_wildcard:
+    logger.warning(
+        "CORS_ORIGINS non configurato con domini specifici (wildcard '*'): "
+        "le richieste cross-origin con credenziali saranno rifiutate. "
+        "In produzione impostare CORS_ORIGINS con la lista dei domini consentiti."
+    )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS.split(","),
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=not _cors_wildcard,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+# Compressione risposte (riduce banda per risposte JSON/HTML di dimensioni maggiori)
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    """Aggiunge header di sicurezza standard a ogni risposta."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    return response
+
+
+class _SlidingWindowRateLimiter:
+    """Rate limiter in-memory a finestra scorrevole, keyed per client IP.
+
+    Adatto a un singolo processo/worker (coerente con il deploy attuale via
+    Procfile). Per deployment multi-worker andrebbe sostituito con uno store
+    condiviso (es. Redis).
+    """
+
+    def __init__(self, max_attempts: int, window_seconds: int):
+        self.max_attempts = max_attempts
+        self.window_seconds = window_seconds
+        self._hits: dict[str, deque] = defaultdict(deque)
+
+    def check(self, key: str) -> bool:
+        now = time.monotonic()
+        hits = self._hits[key]
+        while hits and now - hits[0] > self.window_seconds:
+            hits.popleft()
+        if len(hits) >= self.max_attempts:
+            return False
+        hits.append(now)
+        return True
+
+
+_login_rate_limiter = _SlidingWindowRateLimiter(
+    settings.LOGIN_RATE_LIMIT_ATTEMPTS, settings.LOGIN_RATE_LIMIT_WINDOW_SECONDS
 )
 
 
 # === Pydantic Models ===
 class ChatRequest(BaseModel):
-    query: str
+    query: str = Field(..., min_length=1, max_length=4000)
     conversation_id: str | None = None
 
 
-class ChatResponse(BaseModel):
-    answer: str
-    sources: list
-
-
 class RenameConversationRequest(BaseModel):
-    title: str
+    title: str = Field(..., min_length=1, max_length=255)
 
 
 class LLMSettingRequest(BaseModel):
-    provider: str
-    api_key: str | None = None
-    base_url: str | None = None
-    model: str
+    provider: str = Field(..., max_length=50)
+    api_key: str | None = Field(default=None, max_length=1000)
+    base_url: str | None = Field(default=None, max_length=500)
+    model: str = Field(..., max_length=255)
     is_active: bool = False
 
 
@@ -92,19 +152,28 @@ async def health_check():
     return {
         "status": "healthy",
         "version": "2.0.0",
-        "llm_model": settings.LLM_MODEL,
         "embedding_model": settings.EMBEDDING_MODEL,
     }
 
 
 # --- Autenticazione ---
 @app.post("/login")
-async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)):
+async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)):
     """Autentica un utente e restituisce un JWT token."""
+    client_ip = request.client.host if request.client else "unknown"
+    if not _login_rate_limiter.check(client_ip):
+        logger.warning(f"Rate limit login superato per IP: {client_ip}")
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Troppi tentativi di accesso. Riprova più tardi.")
+
     result = await db.execute(select(User).filter(User.email == form_data.username))
     user = result.scalars().first()
-    
-    if not user or not verify_password(form_data.password, user.password_hash):
+
+    # bcrypt è deliberatamente costoso in CPU: eseguito in un thread separato
+    # per non bloccare l'event loop (e con esso tutte le altre richieste,
+    # incluso lo streaming chat di altri utenti) durante la verifica.
+    password_valid = await asyncio.to_thread(verify_password, form_data.password, user.password_hash) if user else False
+
+    if not user or not password_valid:
         logger.warning(f"Tentativo di login fallito per: {form_data.username}")
         raise HTTPException(status_code=400, detail="Credenziali errate")
     
@@ -113,34 +182,74 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSessi
     return {"access_token": token, "token_type": "bearer"}
 
 
+_SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _sanitize_filename(filename: str) -> str:
+    """Riduce un filename utente a un formato sicuro per il filesystem.
+
+    Rimuove ogni componente di percorso (path traversal, es. "../../etc/x")
+    e sostituisce i caratteri non alfanumerici con underscore, limitando
+    la lunghezza per evitare problemi con i limiti del filesystem.
+    """
+    base = os.path.basename(filename or "").strip() or "documento.pdf"
+    base = _SAFE_FILENAME_RE.sub("_", base)
+    return base[:150] or "documento.pdf"
+
+
 # --- Gestione Documenti ---
 @app.post("/v1/documents/upload")
 async def document_upload(
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(...), 
-    tenant: dict = Depends(get_current_tenant), 
+    file: UploadFile = File(...),
+    tenant: dict = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db)
 ):
     """Carica un documento PDF e avvia l'indicizzazione vettoriale in background."""
-    # Validazione tipo file
-    if not file.filename.lower().endswith(".pdf"):
+    # Validazione tipo file (estensione + magic bytes, vedi sotto)
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Solo file PDF sono supportati")
-    
+
+    safe_filename = _sanitize_filename(file.filename)
     upload_dir = f"./storage/company_{tenant['company_id']}/documents"
     os.makedirs(upload_dir, exist_ok=True)
-    
+
     doc_id = uuid.uuid4()
-    file_path = os.path.join(upload_dir, f"{doc_id}_{file.filename}")
-    
-    # Lettura asincrona per evitare saturazione RAM su file pesanti
+    file_path = os.path.join(upload_dir, f"{doc_id}_{safe_filename}")
+
+    # Lettura asincrona per evitare saturazione RAM su file pesanti.
+    # Applichiamo anche un controllo dei magic bytes (%PDF-) e un limite
+    # di dimensione massima per evitare upload malevoli/eccessivi.
+    max_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+    bytes_written = 0
+    error_status: int | None = None
+    error_detail: str | None = None
+
     async with aiofiles.open(file_path, 'wb') as out_file:
-        while content := await file.read(1024 * 1024): 
+        is_first_chunk = True
+        while content := await file.read(1024 * 1024):
+            if is_first_chunk:
+                if not content.startswith(b"%PDF-"):
+                    error_status, error_detail = 400, "Il file non è un PDF valido"
+                    break
+                is_first_chunk = False
+
+            bytes_written += len(content)
+            if bytes_written > max_bytes:
+                error_status, error_detail = 413, f"File troppo grande (limite {settings.MAX_UPLOAD_SIZE_MB}MB)"
+                break
+
             await out_file.write(content)
-        
+
+    if error_detail:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise HTTPException(status_code=error_status, detail=error_detail)
+
     doc_rec = Document(
-        id=doc_id, 
-        company_id=uuid.UUID(tenant["company_id"]), 
-        filename=file.filename, 
+        id=doc_id,
+        company_id=uuid.UUID(tenant["company_id"]),
+        filename=safe_filename,
         storage_path=file_path,
         status="processing"
     )
@@ -231,61 +340,77 @@ async def delete_document(doc_id: str, tenant: dict = Depends(get_current_tenant
     return {"status": "success"}
 
 
-# --- Chat ---
-@app.post("/v1/chat")
-async def chat(body: ChatRequest, tenant: dict = Depends(get_current_tenant), db: AsyncSession = Depends(get_db)):
-    """Invia una domanda all'assistente AI e ricevi una risposta basata sui documenti aziendali."""
-    user_uuid = uuid.UUID(tenant["user_id"])
-    company_uuid = uuid.UUID(tenant["company_id"])
-    
-    # Valida e recupera la conversazione
-    conversation_uuid = None
-    if body.conversation_id:
-        conversation_uuid = uuid.UUID(body.conversation_id)
-        result = await db.execute(
-            select(Conversation).filter(
-                Conversation.id == conversation_uuid,
-                Conversation.user_id == user_uuid
-            )
+async def _resolve_conversation_uuid(
+    db: AsyncSession, user_uuid: uuid.UUID, conversation_id: str | None
+) -> uuid.UUID | None:
+    """Valida che conversation_id (se fornito) esista e appartenga all'utente."""
+    if not conversation_id:
+        return None
+    conversation_uuid = uuid.UUID(conversation_id)
+    result = await db.execute(
+        select(Conversation).filter(
+            Conversation.id == conversation_uuid,
+            Conversation.user_id == user_uuid
         )
-        conversation = result.scalars().first()
-        if not conversation:
-            raise HTTPException(status_code=404, detail="Conversazione non trovata")
-    
-    # Salva il messaggio dell'utente
+    )
+    if not result.scalars().first():
+        raise HTTPException(status_code=404, detail="Conversazione non trovata")
+    return conversation_uuid
+
+
+async def _save_user_message_and_touch_conversation(
+    db: AsyncSession,
+    user_uuid: uuid.UUID,
+    company_uuid: uuid.UUID,
+    conversation_uuid: uuid.UUID | None,
+    query: str,
+) -> None:
+    """Salva il messaggio utente e, se associato a una conversazione, ne
+    aggiorna titolo (alla prima domanda) e updated_at. Condivisa tra la
+    versione streaming e non-streaming della chat."""
     user_msg = ChatMessage(
         id=uuid.uuid4(),
         user_id=user_uuid,
         company_id=company_uuid,
         conversation_id=conversation_uuid,
         role="user",
-        content=body.query
+        content=query
     )
     db.add(user_msg)
     await db.commit()
-    
-    # Se la conversazione era vuota ed è associata, aggiorniamo il titolo basandoci sulla prima query
-    if conversation_uuid:
-        # Conta messaggi in questa conversazione
-        res_count = await db.execute(
-            sqlalchemy_text("SELECT COUNT(*) FROM chat_messages WHERE conversation_id = :conv_id"),
+
+    if not conversation_uuid:
+        return
+
+    res_count = await db.execute(
+        sqlalchemy_text("SELECT COUNT(*) FROM chat_messages WHERE conversation_id = :conv_id"),
+        {"conv_id": conversation_uuid}
+    )
+    count = res_count.scalar() or 0
+    if count <= 1:
+        title = query[:40] + "..." if len(query) > 40 else query
+        await db.execute(
+            sqlalchemy_text("UPDATE conversations SET title = :title, updated_at = NOW() WHERE id = :conv_id"),
+            {"title": title, "conv_id": conversation_uuid}
+        )
+    else:
+        await db.execute(
+            sqlalchemy_text("UPDATE conversations SET updated_at = NOW() WHERE id = :conv_id"),
             {"conv_id": conversation_uuid}
         )
-        count = res_count.scalar() or 0
-        if count <= 1:
-            title = body.query[:40] + "..." if len(body.query) > 40 else body.query
-            await db.execute(
-                sqlalchemy_text("UPDATE conversations SET title = :title, updated_at = NOW() WHERE id = :conv_id"),
-                {"title": title, "conv_id": conversation_uuid}
-            )
-            await db.commit()
-        else:
-            await db.execute(
-                sqlalchemy_text("UPDATE conversations SET updated_at = NOW() WHERE id = :conv_id"),
-                {"conv_id": conversation_uuid}
-            )
-            await db.commit()
-            
+    await db.commit()
+
+
+# --- Chat ---
+@app.post("/v1/chat")
+async def chat(body: ChatRequest, tenant: dict = Depends(get_current_tenant), db: AsyncSession = Depends(get_db)):
+    """Invia una domanda all'assistente AI e ricevi una risposta basata sui documenti aziendali."""
+    user_uuid = uuid.UUID(tenant["user_id"])
+    company_uuid = uuid.UUID(tenant["company_id"])
+
+    conversation_uuid = await _resolve_conversation_uuid(db, user_uuid, body.conversation_id)
+    await _save_user_message_and_touch_conversation(db, user_uuid, company_uuid, conversation_uuid, body.query)
+
     # Esegui il pipeline RAG
     tenant_with_chat = {**tenant, "chat_id": conversation_uuid}
     rag_response = await run_rag_pipeline(tenant_with_chat, body.query, db)
@@ -311,54 +436,10 @@ async def chat_stream(body: ChatRequest, tenant: dict = Depends(get_current_tena
     """Versione streaming della chat — invia token in tempo reale via SSE."""
     user_uuid = uuid.UUID(tenant["user_id"])
     company_uuid = uuid.UUID(tenant["company_id"])
-    
-    # Valida e recupera la conversazione
-    conversation_uuid = None
-    if body.conversation_id:
-        conversation_uuid = uuid.UUID(body.conversation_id)
-        result = await db.execute(
-            select(Conversation).filter(
-                Conversation.id == conversation_uuid,
-                Conversation.user_id == user_uuid
-            )
-        )
-        conversation = result.scalars().first()
-        if not conversation:
-            raise HTTPException(status_code=404, detail="Conversazione non trovata")
-            
-    # Salva il messaggio dell'utente
-    user_msg = ChatMessage(
-        id=uuid.uuid4(),
-        user_id=user_uuid,
-        company_id=company_uuid,
-        conversation_id=conversation_uuid,
-        role="user",
-        content=body.query
-    )
-    db.add(user_msg)
-    await db.commit()
-    
-    # Se la conversazione era vuota ed è associata, aggiorniamo il titolo
-    if conversation_uuid:
-        res_count = await db.execute(
-            sqlalchemy_text("SELECT COUNT(*) FROM chat_messages WHERE conversation_id = :conv_id"),
-            {"conv_id": conversation_uuid}
-        )
-        count = res_count.scalar() or 0
-        if count <= 1:
-            title = body.query[:40] + "..." if len(body.query) > 40 else body.query
-            await db.execute(
-                sqlalchemy_text("UPDATE conversations SET title = :title, updated_at = NOW() WHERE id = :conv_id"),
-                {"title": title, "conv_id": conversation_uuid}
-            )
-            await db.commit()
-        else:
-            await db.execute(
-                sqlalchemy_text("UPDATE conversations SET updated_at = NOW() WHERE id = :conv_id"),
-                {"conv_id": conversation_uuid}
-            )
-            await db.commit()
-            
+
+    conversation_uuid = await _resolve_conversation_uuid(db, user_uuid, body.conversation_id)
+    await _save_user_message_and_touch_conversation(db, user_uuid, company_uuid, conversation_uuid, body.query)
+
     async def event_generator():
         full_answer = []
         sources_data = []

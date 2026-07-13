@@ -1,5 +1,4 @@
 import uuid
-import json
 import logging
 import asyncio
 import pdfplumber
@@ -7,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text as sqlalchemy_text
 from backend.embeddings import get_embeddings_batch_async, get_embedding_async
 from backend.llm import generate_answer_async, generate_answer_stream_async
-from backend.database import AsyncSessionLocal, Document, ChatMessage
+from backend.database import AsyncSessionLocal, ChatMessage
 from backend.config import get_settings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -65,7 +64,7 @@ HYBRID_SEARCH_SQL = sqlalchemy_text("""
         COALESCE(f.similarity_score, 1 - (c.embedding <=> CAST(:query_vector AS vector))) AS similarity_score
     FROM fused f
     JOIN chunks c ON c.id = f.id
-    JOIN documents d ON c.document_id::text = d.id::text
+    JOIN documents d ON c.document_id = d.id
     ORDER BY f.rrf_score DESC
     LIMIT :max_chunks
 """)
@@ -174,25 +173,26 @@ async def process_pdf_and_chunk(file_path: str, company_id: str, doc_id: str):
                 batch_vectors = await get_embeddings_batch_async(batch)
                 all_vectors.extend(batch_vectors)
 
-            # === FASE 4: Inserimento nel database ===
+            # === FASE 4: Inserimento nel database (batch, singola round-trip) ===
             # text_search è una colonna generata (vedi migration.sql):
             # si popola automaticamente da `text`, non va passata qui.
-            for chunk_data, vector in zip(chunks_with_metadata, all_vectors):
-                sql = sqlalchemy_text("""
-                    INSERT INTO chunks (id, document_id, company_id, text, page_number, chunk_index, embedding)
-                    VALUES (:id, :document_id, :company_id, :text, :page_number, :chunk_index, :embedding)
-                """)
-
-                await db.execute(sql, {
+            insert_sql = sqlalchemy_text("""
+                INSERT INTO chunks (id, document_id, company_id, text, page_number, chunk_index, embedding)
+                VALUES (:id, :document_id, :company_id, :text, :page_number, :chunk_index, :embedding)
+            """)
+            chunk_rows = [
+                {
                     "id": str(uuid.uuid4()),
                     "document_id": doc_id,
                     "company_id": company_id,
                     "text": chunk_data["text"],
                     "page_number": chunk_data["page_number"],
                     "chunk_index": chunk_data["chunk_index"],
-                    "embedding": str(vector)
-                })
-
+                    "embedding": str(vector),
+                }
+                for chunk_data, vector in zip(chunks_with_metadata, all_vectors)
+            ]
+            await db.execute(insert_sql, chunk_rows)
             await db.commit()
             await _update_document_status(db, doc_id, "ready", total_pages, len(chunks_with_metadata))
 

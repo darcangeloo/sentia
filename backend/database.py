@@ -1,7 +1,7 @@
 import logging
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
-from sqlalchemy import Column, String, ForeignKey, TEXT, TIMESTAMP, LargeBinary, Float, Integer, Index, Boolean, text as sqlalchemy_text
+from sqlalchemy import Column, String, ForeignKey, TEXT, TIMESTAMP, LargeBinary, Integer, Index, Boolean, text as sqlalchemy_text
 from sqlalchemy.dialects.postgresql import UUID
 from backend.config import get_settings
 

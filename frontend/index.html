@@ -6,7 +6,7 @@
     <meta name="description" content="Sentia — Assistente AI aziendale basato su documenti interni">
     <title>Sentia Assistant</title>
     <link rel="stylesheet" href="style.css">
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230fa968'/><text x='16' y='22' font-family='Arial,sans-serif' font-size='16' font-weight='700' fill='white' text-anchor='middle'>S</text></svg>">
 </head>
 <body>
 
@@ -14,6 +14,7 @@
     <div id="login-page" class="login-container">
         <div class="login-card">
             <div class="login-logo">
+                <span class="login-logo-icon">S</span>
                 <h1>Sentia</h1>
             </div>
             <p class="login-subtitle">Accedi al workspace aziendale con le credenziali fornite per interrogare i tuoi documenti</p>
@@ -45,15 +46,16 @@
         <!-- === Sidebar === -->
         <aside id="sidebar" class="sidebar">
             <div class="sidebar-header">
+                <span class="sidebar-logo">S</span>
                 <h3 class="sidebar-title"></h3>
             </div>
-            
+
             <div class="sidebar-new-chat-container">
                 <button id="btn-new-chat" class="btn-new-chat" title="Nuova conversazione">
                     <span class="plus-icon">+</span> Nuova Chat
                 </button>
             </div>
-            
+
             <div class="sidebar-content">
                 <div class="sidebar-section-title">Conversazioni</div>
                 <ul id="chat-list" class="chat-list">
@@ -62,30 +64,30 @@
                 <div id="chat-empty" class="chat-empty hidden">
                     <p>Nessuna chat recente</p>
                 </div>
-                
+
                 <!-- Collapsible Documents Section -->
                 <div class="sidebar-section-title collapsible" id="docs-accordion-header">
                     <span>Documenti Aziendali</span>
-                    <span class="accordion-icon">▼</span>
+                    <span class="accordion-icon" data-icon="chevron-down"></span>
                 </div>
                 <div id="docs-accordion-content" class="docs-accordion-content">
                     <ul id="doc-list" class="doc-list">
                         <!-- Populated by JS -->
                     </ul>
                     <div id="doc-empty" class="doc-empty hidden">
-                        <div class="doc-empty-icon">📂</div>
+                        <div class="doc-empty-icon" data-icon="folder"></div>
                         <p>Nessun documento caricato</p>
                     </div>
-                    
+
                     <!-- Upload Area -->
                     <div class="sidebar-section-title small">Carica PDF</div>
                     <div id="upload-area" class="upload-area">
-                        <div class="upload-area-icon">📎</div>
+                        <div class="upload-area-icon" data-icon="upload"></div>
                         <div class="upload-area-text">Trascina un PDF qui</div>
                         <div class="upload-area-hint">o clicca per sfogliare</div>
                     </div>
                     <input type="file" id="file-input" class="file-input-hidden" accept=".pdf">
-                    
+
                     <div id="upload-progress" class="upload-progress">
                         <div class="progress-bar-container">
                             <div id="progress-bar" class="progress-bar" style="width: 0%"></div>
@@ -94,15 +96,15 @@
                     </div>
                 </div>
             </div>
-            
+
             <div class="sidebar-footer">
                 <div class="sidebar-user">
                     <div id="user-avatar" class="user-avatar">U</div>
                     <div class="user-info">
                         <div id="user-email" class="user-email">utente@azienda.it</div>
                     </div>
-                    <button id="btn-settings" class="btn-settings" title="Impostazioni">⚙️</button>
-                    <button id="btn-logout" class="btn-logout" title="Logout">Esci</button>
+                    <button id="btn-settings" class="btn-settings" title="Impostazioni" aria-label="Impostazioni"><span data-icon="settings"></span></button>
+                    <button id="btn-logout" class="btn-logout" title="Logout" aria-label="Logout"><span data-icon="logout"></span> Esci</button>
                 </div>
             </div>
         </aside>
@@ -113,46 +115,46 @@
             <!-- --- Chat View --- -->
             <div id="chat-view" class="chat-view">
                 <div class="chat-header">
-                    <button id="mobile-menu-btn" class="mobile-menu-btn" title="Menu">☰</button>
+                    <button id="mobile-menu-btn" class="mobile-menu-btn" title="Menu" aria-label="Apri menu"><span data-icon="menu"></span></button>
                     <div class="chat-header-info">
                         <h2 id="active-chat-title">Sentia</h2>
                         <p>Basato sui documenti della tua azienda</p>
                     </div>
                     <div class="chat-header-actions">
-                        <button id="btn-clear-chat" class="btn-icon" title="Nuova conversazione">
-                            🗑️ Cancella chat
+                        <button id="btn-clear-chat" class="btn-icon" title="Cancella conversazione">
+                            <span data-icon="trash"></span> Cancella chat
                         </button>
                     </div>
                 </div>
-                
+
                 <div id="chat-messages" class="chat-messages">
                     <!-- Welcome state -->
                     <div id="chat-welcome" class="chat-welcome">
-                        <div class="welcome-icon">🧠</div>
+                        <div class="welcome-icon" data-icon="sparkle"></div>
                         <h2 class="welcome-title">Benvenuto!</h2>
                         <p class="welcome-subtitle">
-                            Sono il tuo assistente AI aziendale. Posso rispondere alle tue domande 
+                            Sono il tuo assistente AI aziendale. Posso rispondere alle tue domande
                             basandomi sui documenti interni caricati nel sistema.
                         </p>
                         <div class="welcome-suggestions">
-                            <button class="suggestion-chip" data-query="Quali sono le politiche aziendali principali?">📋 Politiche aziendali</button>
-                            <button class="suggestion-chip" data-query="Come funziona la procedura di onboarding?">👋 Procedura onboarding</button>
-                            <button class="suggestion-chip" data-query="Quali sono le norme di sicurezza IT?">🔒 Sicurezza IT</button>
-                            <button class="suggestion-chip" data-query="Riassumi le procedure operative standard">📑 Procedure operative</button>
+                            <button class="suggestion-chip" data-query="Quali sono le politiche aziendali principali?">Politiche aziendali</button>
+                            <button class="suggestion-chip" data-query="Come funziona la procedura di onboarding?">Procedura onboarding</button>
+                            <button class="suggestion-chip" data-query="Quali sono le norme di sicurezza IT?">Sicurezza IT</button>
+                            <button class="suggestion-chip" data-query="Riassumi le procedure operative standard">Procedure operative</button>
                         </div>
                     </div>
                 </div>
-                
+
                 <div class="chat-input-container">
                     <div class="chat-input-wrapper">
                         <div class="chat-input-box">
-                            <textarea 
-                                id="chat-input" 
-                                class="chat-input" 
-                                placeholder="Scrivi la tua domanda..." 
+                            <textarea
+                                id="chat-input"
+                                class="chat-input"
+                                placeholder="Scrivi la tua domanda..."
                                 rows="1"
                             ></textarea>
-                            <button id="btn-send" class="btn-send" disabled title="Invia messaggio">➤</button>
+                            <button id="btn-send" class="btn-send" disabled title="Invia messaggio" aria-label="Invia messaggio"><span data-icon="send"></span></button>
                         </div>
                         <p class="chat-disclaimer">Le risposte sono generate dall'AI basandosi sui documenti aziendali caricati</p>
                     </div>
@@ -162,7 +164,7 @@
             <!-- --- Settings View --- -->
             <div id="settings-view" class="settings-view hidden">
                 <div class="settings-view-header">
-                    <h2>⚙️ Impostazioni Provider LLM</h2>
+                    <h2>Impostazioni Provider LLM</h2>
                     <p>Configura i provider di Intelligenza Artificiale attivi per il tuo account aziendale.</p>
                 </div>
                 
@@ -173,7 +175,7 @@
                         <div class="provider-card" id="card-openai">
                             <div class="provider-card-header">
                                 <div class="provider-info-header">
-                                    <span class="provider-badge-icon">🌐</span>
+                                    <span class="provider-badge-icon">AI</span>
                                     <h3>OpenAI</h3>
                                 </div>
                                 <span class="provider-status-badge inactive" id="openai-status-badge">Inattivo</span>
@@ -206,7 +208,7 @@
                         <div class="provider-card" id="card-anthropic">
                             <div class="provider-card-header">
                                 <div class="provider-info-header">
-                                    <span class="provider-badge-icon">🏺</span>
+                                    <span class="provider-badge-icon">AN</span>
                                     <h3>Anthropic</h3>
                                 </div>
                                 <span class="provider-status-badge inactive" id="anthropic-status-badge">Inattivo</span>
@@ -238,7 +240,7 @@
                         <div class="provider-card" id="card-gemini">
                             <div class="provider-card-header">
                                 <div class="provider-info-header">
-                                    <span class="provider-badge-icon">✨</span>
+                                    <span class="provider-badge-icon">GM</span>
                                     <h3>Gemini</h3>
                                 </div>
                                 <span class="provider-status-badge inactive" id="gemini-status-badge">Inattivo</span>
@@ -276,6 +278,9 @@
 
     <!-- Toast Container -->
     <div id="toast-container" class="toast-container"></div>
+
+    <!-- Modal Root (rename/delete/logout confirmations) -->
+    <div id="modal-root"></div>
 
     <script src="app.js"></script>
 </body>

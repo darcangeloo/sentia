@@ -29,6 +29,51 @@ const state = {
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
+// Escapa testo proveniente da dati utente/documenti prima di inserirlo via
+// innerHTML (titoli conversazione, nomi file, anteprime sorgenti): senza
+// questo, un filename o un titolo malevolo eseguirebbe script (stored XSS).
+function escapeHtml(value) {
+    const div = document.createElement('div');
+    div.textContent = value ?? '';
+    return div.innerHTML;
+}
+
+// ============================================================
+// ICON SYSTEM (inline SVG — nessun emoji, nessuna libreria esterna)
+// ============================================================
+const ICONS = {
+    trash: '<path d="M4 6h12"/><path d="M8 6V4.5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1V6"/><path d="M6 6l.8 10a1 1 0 0 0 1 .9h4.4a1 1 0 0 0 1-.9L14 6"/><path d="M8.5 9v5M11.5 9v5"/>',
+    edit: '<path d="M13.5 3.5a1.8 1.8 0 0 1 2.5 2.5L6 16l-4 1 1-4L13.5 3.5z"/><path d="M12 5l3 3"/>',
+    send: '<polygon points="3,10 17,3.5 10.5,17 8.5,11.5 3,10"/><line x1="8.5" y1="11.5" x2="17" y2="3.5"/>',
+    settings: '<circle cx="10" cy="10" r="2.6"/><path d="M10 3v2.2M10 14.8V17M3 10h2.2M14.8 10H17M5.1 5.1l1.6 1.6M13.3 13.3l1.6 1.6M14.9 5.1l-1.6 1.6M6.7 13.3l-1.6 1.6"/>',
+    file: '<path d="M6.5 2.5h5l3.5 3.5v10.5a1 1 0 0 1-1 1h-7.5a1 1 0 0 1-1-1v-13a1 1 0 0 1 1-1z"/><path d="M11.5 2.5v3.5h3.5"/>',
+    folder: '<path d="M3 6a1 1 0 0 1 1-1h3.5l1.5 1.8H16a1 1 0 0 1 1 1V15a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6z"/>',
+    upload: '<path d="M10 13V4"/><path d="M6.5 7.5L10 4l3.5 3.5"/><path d="M4 15.5h12"/>',
+    search: '<circle cx="8.5" cy="8.5" r="5.5"/><path d="M16.5 16.5L13 13"/>',
+    check: '<circle cx="10" cy="10" r="7.5"/><path d="M6.5 10.3l2.3 2.3 4.7-5.2"/>',
+    clock: '<circle cx="10" cy="10" r="7.5"/><path d="M10 5.5V10l3 2"/>',
+    alert: '<path d="M10 3.2L17.5 16H2.5L10 3.2z"/><path d="M10 8.3v3.4"/><circle cx="10" cy="14" r="0.7" fill="currentColor" stroke="none"/>',
+    chat: '<rect x="3" y="4" width="14" height="9" rx="2"/><path d="M7 13l-1.5 3 3.5-3"/>',
+    sparkle: '<path d="M10 2.5l1.6 5.4L17 9.5l-5.4 1.6L10 16.5l-1.6-5.4L3 9.5l5.4-1.6L10 2.5z"/>',
+    user: '<circle cx="10" cy="7" r="3"/><path d="M4 16.5c1-3.3 3.8-5 6-5s5 1.7 6 5"/>',
+    'chevron-down': '<path d="M5 8l5 5 5-5"/>',
+    menu: '<path d="M3 5.5h14M3 10h14M3 14.5h14"/>',
+    logout: '<path d="M8 4H4.5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1H8"/><path d="M12.5 14l4-4-4-4"/><path d="M16 10H7.5"/>',
+    close: '<path d="M5 5l10 10M15 5L5 15"/>',
+};
+
+function iconMarkup(name, extraClass = '') {
+    const inner = ICONS[name];
+    if (!inner) return '';
+    return `<svg class="icon ${extraClass}" viewBox="0 0 20 20" aria-hidden="true">${inner}</svg>`;
+}
+
+function injectStaticIcons(root = document) {
+    root.querySelectorAll('[data-icon]').forEach(el => {
+        el.innerHTML = iconMarkup(el.dataset.icon);
+    });
+}
+
 const dom = {
     loginPage: $('#login-page'),
     appPage: $('#app-page'),
@@ -101,12 +146,14 @@ const dom = {
 // INITIALIZATION
 // ============================================================
 document.addEventListener('DOMContentLoaded', () => {
+    injectStaticIcons();
+
     if (state.token) {
         showApp();
     } else {
         showLogin();
     }
-    
+
     setupEventListeners();
 });
 
@@ -295,16 +342,28 @@ function showLogin() {
     dom.loginError.classList.add('hidden');
 }
 
+function renderSkeletonRows(container, count = 3) {
+    container.innerHTML = Array.from({ length: count }, (_, i) => `
+        <li class="skeleton-row">
+            <span class="skeleton-block" style="width:${70 - i * 12}%"></span>
+        </li>
+    `).join('');
+}
+
 function showApp() {
     dom.loginPage.classList.add('hidden');
     dom.appPage.classList.remove('hidden');
-    
+
     // Set user info
     if (state.userEmail) {
         dom.userEmail.textContent = state.userEmail;
         dom.userAvatar.textContent = state.userEmail.charAt(0).toUpperCase();
     }
-    
+
+    // Skeleton di caricamento (evita liste vuote mentre le richieste sono in volo)
+    renderSkeletonRows(dom.chatList);
+    renderSkeletonRows(dom.docList);
+
     // Load lists
     loadDocuments();
     loadConversations();
@@ -363,12 +422,13 @@ function renderConversations() {
         li.className = `chat-item ${conv.id === state.activeConversationId ? 'active' : ''}`;
         li.dataset.id = conv.id;
         
+        const safeTitle = escapeHtml(conv.title);
         li.innerHTML = `
-            <span class="chat-item-icon">💬</span>
-            <span class="chat-title" title="${conv.title}">${conv.title}</span>
+            <span class="chat-item-icon">${iconMarkup('chat', 'icon-sm')}</span>
+            <span class="chat-title" title="${safeTitle}">${safeTitle}</span>
             <div class="chat-item-actions">
-                <button class="chat-item-btn btn-rename" title="Rinomina">✏️</button>
-                <button class="chat-item-btn btn-delete" title="Elimina">🗑️</button>
+                <button class="chat-item-btn btn-rename" title="Rinomina" aria-label="Rinomina conversazione">${iconMarkup('edit', 'icon-sm')}</button>
+                <button class="chat-item-btn btn-delete" title="Elimina" aria-label="Elimina conversazione">${iconMarkup('trash', 'icon-sm')}</button>
             </div>
         `;
         
@@ -456,15 +516,19 @@ async function selectConversation(convId) {
 }
 
 async function handleRenameConversation(convId, oldTitle) {
-    const newTitle = prompt('Inserisci il nuovo titolo per la chat:', oldTitle);
-    if (newTitle === null) return;
-    
-    const cleanTitle = newTitle.trim();
+    const cleanTitle = await promptModal({
+        title: 'Rinomina conversazione',
+        label: 'Nuovo titolo',
+        defaultValue: oldTitle,
+        confirmLabel: 'Rinomina',
+    });
+    if (cleanTitle === null) return;
+
     if (!cleanTitle) {
         showToast('Il titolo non può essere vuoto', 'warning');
         return;
     }
-    
+
     try {
         const res = await apiFetch(`/v1/conversations/${convId}`, {
             method: 'PUT',
@@ -494,8 +558,14 @@ async function handleRenameConversation(convId, oldTitle) {
 }
 
 async function handleDeleteConversation(convId) {
-    if (!confirm('Sei sicuro di voler eliminare questa conversazione e tutti i relativi messaggi?')) return;
-    
+    const ok = await confirmModal({
+        title: 'Eliminare la conversazione?',
+        message: 'Questa azione elimina la conversazione e tutti i relativi messaggi in modo permanente.',
+        confirmLabel: 'Elimina',
+        danger: true,
+    });
+    if (!ok) return;
+
     try {
         await apiFetch(`/v1/conversations/${convId}`, { method: 'DELETE' });
         
@@ -549,36 +619,43 @@ function renderDocuments() {
         li.className = 'doc-item';
         
         const statusClass = doc.status || 'ready';
-        const statusLabel = {
-            'ready': '✅ Pronto',
-            'processing': '⏳ Elaborazione',
-            'error': '❌ Errore'
-        }[statusClass] || statusClass;
-        
+        const statusMeta = {
+            'ready': { icon: 'check', label: 'Pronto' },
+            'processing': { icon: 'clock', label: 'Elaborazione' },
+            'error': { icon: 'alert', label: 'Errore' },
+        }[statusClass] || { icon: 'file', label: statusClass };
+
         const meta = [];
         if (doc.page_count) meta.push(`${doc.page_count} pag.`);
         if (doc.chunk_count) meta.push(`${doc.chunk_count} chunks`);
-        
+
+        const safeFilename = escapeHtml(doc.filename);
         li.innerHTML = `
-            <span class="doc-icon">📄</span>
+            <span class="doc-icon">${iconMarkup('file')}</span>
             <div class="doc-info">
-                <div class="doc-name" title="${doc.filename}">${doc.filename}</div>
+                <div class="doc-name" title="${safeFilename}">${safeFilename}</div>
                 <div class="doc-meta">
-                    <span class="doc-status ${statusClass}">${statusLabel}</span>
+                    <span class="doc-status ${statusClass}">${iconMarkup(statusMeta.icon, 'icon-sm')} ${statusMeta.label}</span>
                     ${meta.length ? ' · ' + meta.join(' · ') : ''}
                 </div>
             </div>
-            <button class="doc-delete-btn" title="Elimina documento" data-id="${doc.id}">🗑️</button>
+            <button class="doc-delete-btn" title="Elimina documento" aria-label="Elimina documento" data-id="${escapeHtml(doc.id)}">${iconMarkup('trash', 'icon-sm')}</button>
         `;
-        
+
         li.querySelector('.doc-delete-btn').addEventListener('click', () => deleteDocument(doc.id));
         dom.docList.appendChild(li);
     });
 }
 
 async function deleteDocument(docId) {
-    if (!confirm('Sei sicuro di voler eliminare questo documento e tutti i suoi dati vettoriali?')) return;
-    
+    const ok = await confirmModal({
+        title: 'Eliminare il documento?',
+        message: 'Il file e tutti i suoi dati vettoriali (chunk ed embedding) verranno eliminati in modo permanente.',
+        confirmLabel: 'Elimina',
+        danger: true,
+    });
+    if (!ok) return;
+
     try {
         await apiFetch(`/v1/documents/${docId}`, { method: 'DELETE' });
         showToast('Documento eliminato con successo', 'success');
@@ -629,7 +706,7 @@ async function uploadFile(file) {
         dom.uploadStatus.textContent = 'Indicizzazione in corso...';
         
         const data = await res.json();
-        showToast(`📄 ${file.name} caricato! Indicizzazione in corso...`, 'success');
+        showToast(`${file.name} caricato! Indicizzazione in corso...`, 'success');
         
         if (data.document_id) {
             pollDocumentStatus(data.document_id);
@@ -660,11 +737,11 @@ async function pollDocumentStatus(docId) {
             const data = await res.json();
             
             if (data.status === 'ready') {
-                showToast(`✅ Documento indicizzato: ${data.chunk_count} chunks generati`, 'success');
+                showToast(`Documento indicizzato: ${data.chunk_count} chunks generati`, 'success');
                 loadDocuments();
                 return;
             } else if (data.status === 'error') {
-                showToast('❌ Errore durante l\'indicizzazione del documento', 'error');
+                showToast('Errore durante l\'indicizzazione del documento', 'error');
                 loadDocuments();
                 return;
             }
@@ -781,7 +858,7 @@ async function handleSendMessage() {
                                 loadConversations();
                             }
                         } else if (event.type === 'error') {
-                            contentEl.innerHTML = `<p style="color: var(--color-error)">⚠️ ${event.data}</p>`;
+                            contentEl.innerHTML = `<p style="color: var(--color-error)">${escapeHtml(event.data)}</p>`;
                         }
                     } catch (parseErr) {
                         // ignore
@@ -792,7 +869,7 @@ async function handleSendMessage() {
         
     } catch (err) {
         typingEl.remove();
-        appendMessage('assistant', `⚠️ Errore: ${err.message}. Riprova.`);
+        appendMessage('assistant', `Errore: ${err.message}. Riprova.`);
         console.error('Chat error:', err);
     } finally {
         state.isStreaming = false;
@@ -802,8 +879,14 @@ async function handleSendMessage() {
 }
 
 async function handleClearChat() {
-    if (!confirm('Vuoi cancellare questa conversazione e tutti i relativi messaggi?')) return;
-    
+    const ok = await confirmModal({
+        title: 'Cancellare la conversazione?',
+        message: 'La conversazione corrente e tutti i relativi messaggi verranno cancellati in modo permanente.',
+        confirmLabel: 'Cancella',
+        danger: true,
+    });
+    if (!ok) return;
+
     try {
         await apiFetch(`/v1/conversations/${state.activeConversationId}`, { method: 'DELETE' });
         
@@ -826,13 +909,13 @@ function appendMessage(role, content, sources = null, isStreaming = false) {
     const messageEl = document.createElement('div');
     messageEl.className = `message ${role}`;
     
-    const avatar = role === 'user' ? '👤' : '🧠';
+    const avatar = iconMarkup(role === 'user' ? 'user' : 'sparkle', 'icon-sm');
     const sender = role === 'user' ? 'Tu' : 'Sentia';
-    
+
     const contentEl = document.createElement('div');
     contentEl.className = 'message-content';
     contentEl.innerHTML = isStreaming ? '' : formatMarkdown(content);
-    
+
     messageEl.innerHTML = `
         <div class="message-avatar">${avatar}</div>
         <div class="message-body">
@@ -857,7 +940,7 @@ function showTypingIndicator() {
     const el = document.createElement('div');
     el.className = 'message assistant';
     el.innerHTML = `
-        <div class="message-avatar">🧠</div>
+        <div class="message-avatar">${iconMarkup('sparkle', 'icon-sm')}</div>
         <div class="message-body">
             <div class="message-sender">Assistente AI</div>
             <div class="typing-indicator">
@@ -876,7 +959,7 @@ function createSourcesPanel(sources) {
     
     const toggle = document.createElement('button');
     toggle.className = 'sources-toggle';
-    toggle.innerHTML = `🔍 Fonti utilizzate (${sources.length}) <span class="chevron">▼</span>`;
+    toggle.innerHTML = `${iconMarkup('search', 'icon-sm')} Fonti utilizzate (${sources.length}) <span class="chevron">${iconMarkup('chevron-down', 'icon-sm')}</span>`;
     
     const list = document.createElement('div');
     list.className = 'sources-list';
@@ -886,14 +969,14 @@ function createSourcesPanel(sources) {
         item.className = 'source-item';
         
         const pageInfo = src.page_number ? `Pagina ${src.page_number}` : '';
-        const scoreHtml = src.relevance_score 
-            ? `<span class="source-score">${Math.round(src.relevance_score * 100)}% rilevanza</span>` 
+        const scoreHtml = src.relevance_score
+            ? `<span class="source-score">${Math.round(src.relevance_score * 100)}% rilevanza</span>`
             : '';
-        
+
         item.innerHTML = `
-            <div class="source-filename">📄 ${src.filename} ${scoreHtml}</div>
-            ${pageInfo ? `<div class="source-page">${pageInfo}</div>` : ''}
-            <div class="source-preview">${src.text_preview}</div>
+            <div class="source-filename">${iconMarkup('file', 'icon-sm')} ${escapeHtml(src.filename)} ${scoreHtml}</div>
+            ${pageInfo ? `<div class="source-page">${escapeHtml(pageInfo)}</div>` : ''}
+            <div class="source-preview">${escapeHtml(src.text_preview)}</div>
         `;
         list.appendChild(item);
     });
@@ -1005,7 +1088,7 @@ async function saveProviderSettings(provider) {
     const saveBtn = $(`.btn-save-provider[data-provider="${provider}"]`);
     const originalText = saveBtn.textContent;
     saveBtn.disabled = true;
-    saveBtn.innerHTML = '⚡ Validazione...';
+    saveBtn.innerHTML = '<span class="spinner"></span> Validazione...';
     
     if (provider === 'openai') {
         payload.api_key = dom.openaiApiKey.value.trim();
@@ -1040,8 +1123,14 @@ async function saveProviderSettings(provider) {
 }
 
 async function deleteProviderSettings(provider) {
-    if (!confirm(`Sei sicuro di voler eliminare la configurazione per ${provider.toUpperCase()}?`)) return;
-    
+    const ok = await confirmModal({
+        title: 'Eliminare la configurazione?',
+        message: `La configurazione salvata per ${provider.toUpperCase()} verrà eliminata in modo permanente.`,
+        confirmLabel: 'Elimina',
+        danger: true,
+    });
+    if (!ok) return;
+
     try {
         await apiFetch(`/v1/settings/llm/${provider}`, { method: 'DELETE' });
         
@@ -1087,12 +1176,105 @@ function showToast(message, type = 'info') {
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
     toast.textContent = message;
-    
+
     dom.toastContainer.appendChild(toast);
-    
+
     setTimeout(() => {
         toast.remove();
     }, 4000);
+}
+
+
+// ============================================================
+// MODAL (sostituisce alert/prompt/confirm nativi del browser)
+// ============================================================
+const modalRoot = $('#modal-root');
+
+function closeModal(overlay) {
+    overlay.remove();
+    document.removeEventListener('keydown', overlay._onKeydown);
+}
+
+function openModal({ title, bodyHtml, buttons, initialFocusSelector }) {
+    return new Promise((resolve) => {
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+
+        const buttonsHtml = buttons.map((b, i) =>
+            `<button type="button" class="${b.className}" data-action="${i}">${escapeHtml(b.label)}</button>`
+        ).join('');
+
+        overlay.innerHTML = `
+            <div class="modal-card" role="dialog" aria-modal="true" aria-label="${escapeHtml(title)}">
+                <div class="modal-header"><h3>${escapeHtml(title)}</h3></div>
+                <div class="modal-body">${bodyHtml}</div>
+                <div class="modal-footer">${buttonsHtml}</div>
+            </div>
+        `;
+
+        const settle = (value) => {
+            closeModal(overlay);
+            resolve(value);
+        };
+
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) settle(buttons.find(b => b.isCancel)?.value ?? null);
+        });
+
+        buttons.forEach((b, i) => {
+            overlay.querySelector(`[data-action="${i}"]`).addEventListener('click', () => {
+                settle(typeof b.value === 'function' ? b.value(overlay) : b.value);
+            });
+        });
+
+        const onKeydown = (e) => {
+            if (e.key === 'Escape') settle(buttons.find(b => b.isCancel)?.value ?? null);
+            if (e.key === 'Enter' && document.activeElement?.tagName !== 'BUTTON') {
+                const primary = buttons.find(b => b.isPrimary);
+                if (primary) settle(typeof primary.value === 'function' ? primary.value(overlay) : primary.value);
+            }
+        };
+        overlay._onKeydown = onKeydown;
+        document.addEventListener('keydown', onKeydown);
+
+        modalRoot.appendChild(overlay);
+
+        const toFocus = initialFocusSelector
+            ? overlay.querySelector(initialFocusSelector)
+            : overlay.querySelector('.modal-footer button');
+        toFocus?.focus();
+    });
+}
+
+function confirmModal({ title, message, confirmLabel = 'Conferma', danger = false }) {
+    return openModal({
+        title,
+        bodyHtml: `<p>${escapeHtml(message)}</p>`,
+        buttons: [
+            { label: 'Annulla', className: 'btn-secondary', value: false, isCancel: true },
+            { label: confirmLabel, className: danger ? 'btn-danger' : 'btn-primary', value: true, isPrimary: true },
+        ],
+    });
+}
+
+function promptModal({ title, label, defaultValue = '', confirmLabel = 'Salva' }) {
+    return openModal({
+        title,
+        bodyHtml: `
+            <label class="form-label" for="modal-prompt-input">${escapeHtml(label)}</label>
+            <input type="text" id="modal-prompt-input" class="form-input" value="${escapeHtml(defaultValue)}">
+        `,
+        buttons: [
+            { label: 'Annulla', className: 'btn-secondary', value: null, isCancel: true },
+            {
+                label: confirmLabel,
+                className: 'btn-primary',
+                isPrimary: true,
+                value: (overlay) => overlay.querySelector('#modal-prompt-input').value.trim(),
+            },
+        ],
+        initialFocusSelector: '#modal-prompt-input',
+    });
 }
 
 

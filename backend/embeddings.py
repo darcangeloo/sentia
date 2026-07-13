@@ -9,6 +9,11 @@ settings = get_settings()
 
 _client = None
 
+# Limita le chiamate concorrenti verso l'API HuggingFace durante il batch
+# embedding: senza questo semaforo, un documento con centinaia di chunk
+# lancerebbe altrettanti thread/richieste HTTP simultanee.
+_embedding_semaphore = asyncio.Semaphore(settings.EMBEDDING_CONCURRENCY)
+
 
 def _get_client():
     global _client
@@ -38,30 +43,6 @@ def get_embedding(text: str) -> list[float]:
     return response.tolist()
 
 
-def get_embeddings_batch(texts: list[str]) -> list[list[float]]:
-    if not texts:
-        return []
-
-    client = _get_client()
-
-    clean_texts = [
-        " ".join(t.split())
-        for t in texts
-    ]
-
-    embeddings = []
-
-    for text in clean_texts:
-        vector = client.feature_extraction(
-            text,
-            model=settings.EMBEDDING_MODEL
-        )
-
-        embeddings.append(vector.tolist())
-
-    return embeddings
-
-
 async def get_embedding_async(text: str):
     return await asyncio.to_thread(
         get_embedding,
@@ -69,8 +50,19 @@ async def get_embedding_async(text: str):
     )
 
 
-async def get_embeddings_batch_async(texts):
-    return await asyncio.to_thread(
-        get_embeddings_batch,
-        texts
-    )
+async def _get_embedding_bounded(text: str) -> list[float]:
+    async with _embedding_semaphore:
+        return await asyncio.to_thread(get_embedding, text)
+
+
+async def get_embeddings_batch_async(texts: list[str]) -> list[list[float]]:
+    """Genera gli embedding per una lista di testi in parallelo.
+
+    Le chiamate sono concorrenti (bounded da EMBEDDING_CONCURRENCY) invece che
+    sequenziali, riducendo significativamente la latenza totale per documenti
+    con molti chunk.
+    """
+    if not texts:
+        return []
+
+    return await asyncio.gather(*(_get_embedding_bounded(t) for t in texts))
