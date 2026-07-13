@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     OLLAMA_BASE_URL: str = "http://localhost:11434/v1"
     OLLAMA_API_KEY: str = "ollama"
     LLM_MODEL: str = "deepseek-r1:14b"
-    EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
+    EMBEDDING_MODEL: str = "BAAI/bge-m3"
     HF_TOKEN: str 
     
     # === RAG Pipeline ===
@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     
     # === Applicazione ===
-    APP_TITLE: str = "AI Corporate Assistant"
+    APP_TITLE: str = "Sentia Assistant API"
     CORS_ORIGINS: str = "*"  # In produzione, restringere ai domini specifici
     
     class Config:
