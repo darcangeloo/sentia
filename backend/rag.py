@@ -77,7 +77,7 @@ async def get_recent_messages(
 ) -> str:
     result = await db.execute(
         select(ChatMessage)
-        .where(ChatMessage.chat_id == chat_id)
+        .where(ChatMessage.conversation_id == chat_id)
         .order_by(ChatMessage.created_at.desc())
         .limit(limit)
     )
