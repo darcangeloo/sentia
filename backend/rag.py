@@ -4,10 +4,10 @@ import logging
 import asyncio
 import pdfplumber
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text as sqlalchemy_text
+from sqlalchemy import select, text as sqlalchemy_text
 from backend.embeddings import get_embeddings_batch_async, get_embedding_async
 from backend.llm import generate_answer_async, generate_answer_stream_async
-from backend.database import AsyncSessionLocal, Document
+from backend.database import AsyncSessionLocal, Document, ChatMessage
 from backend.config import get_settings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -70,6 +70,27 @@ HYBRID_SEARCH_SQL = sqlalchemy_text("""
     LIMIT :max_chunks
 """)
 
+async def get_recent_messages(
+    db: AsyncSession,
+    chat_id: str,
+    limit: int = 5
+) -> str:
+    result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.chat_id == chat_id)
+        .order_by(ChatMessage.created_at.desc())
+        .limit(limit)
+    )
+
+    messages = result.scalars().all()
+
+    messages.reverse()
+
+    history = ""
+    for msg in messages:
+        history += f"{msg.role}: {msg.content}\n"
+
+    return history
 
 async def process_pdf_and_chunk(file_path: str, company_id: str, doc_id: str):
     """Estrae testo da un PDF, lo divide in chunks e genera gli embedding.
@@ -260,6 +281,7 @@ async def run_rag_pipeline(tenant: dict, user_query: str, db: AsyncSession) -> d
         Dict con 'answer' (la risposta LLM) e 'sources' (le fonti utilizzate)
     """
     rows = await _retrieve_hybrid(tenant, user_query, db)
+    history = await get_recent_messages(db, tenant["chat_id"], limit=6)
 
     if not rows:
         return {
@@ -268,7 +290,7 @@ async def run_rag_pipeline(tenant: dict, user_query: str, db: AsyncSession) -> d
         }
 
     context, sources = _build_context_and_sources(rows)
-    answer = await generate_answer_async(user_query, context, tenant, db)
+    answer = await generate_answer_async(user_query, context, history,tenant, db)
 
     logger.info(
         f"RAG pipeline completato: {len(sources)} fonti, "

@@ -301,19 +301,28 @@ async def generate_gemini_stream(model: str, api_key: str, messages: list, syste
         yield f"\n\n⚠️ Errore comunicazione con Gemini: {str(e)}"
 
 
-async def generate_answer_async(user_query: str, context: str, tenant: dict | None = None, db: AsyncSession | None = None) -> str:
+async def generate_answer_async(user_query: str, context: str, history: str = "",tenant: dict | None = None, db: AsyncSession | None = None) -> str:
     """Genera una risposta usando il provider LLM configurato (async)."""
     config = await get_active_provider_config(tenant, db)
     provider = config["provider"]
     model = config["model"]
-    user_message = f"""Contesto documentale aziendale:
----
-{context}
----
+    user_message = f"""
+    Conversazione precedente:
+    ---
+    {history}
+    ---
 
-Domanda del dipendente: {user_query}
+    Contesto documentale aziendale:
+    ---
+    {context}
+    ---
 
-Rispondi basandoti esclusivamente sul contesto fornito sopra."""
+    Domanda attuale:
+    {user_query}
+
+    Usa la conversazione precedente per capire il significato della domanda.
+    Rispondi usando solo le informazioni presenti nei documenti.
+    """
     messages = [{"role": "user", "content": user_message}]
     
     try:
@@ -332,19 +341,28 @@ Rispondi basandoti esclusivamente sul contesto fornito sopra."""
         raise HTTPException(status_code=502, detail=f"Errore comunicazione {provider}: {str(e)}")
 
 
-async def generate_answer_stream_async(user_query: str, context: str, tenant: dict | None = None, db: AsyncSession | None = None):
+async def generate_answer_stream_async(user_query: str, context: str, history: str = "", tenant: dict | None = None, db: AsyncSession | None = None):
     """Genera una risposta in streaming usando il provider LLM configurato (async)."""
     config = await get_active_provider_config(tenant, db)
     provider = config["provider"]
     model = config["model"]
-    user_message = f"""Contesto documentale aziendale:
----
-{context}
----
+    user_message = f"""
+    Conversazione precedente:
+    ---
+    {history}
+    ---
 
-Domanda del dipendente: {user_query}
+    Contesto documentale aziendale:
+    ---
+    {context}
+    ---
 
-Rispondi basandoti esclusivamente sul contesto fornito sopra."""
+    Domanda attuale:
+    {user_query}
+
+    Usa la conversazione precedente per capire il significato della domanda.
+    Rispondi usando solo le informazioni presenti nei documenti.
+    """
     messages = [{"role": "user", "content": user_message}]
     
     try:
