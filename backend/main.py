@@ -14,10 +14,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import text as sqlalchemy_text
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from pydantic import BaseModel, Field
 from backend.database import AsyncSessionLocal, Company, User, Document, ChatMessage, Conversation, UserLLMSetting
 from backend.auth import create_access_token, verify_password, get_current_tenant
@@ -86,6 +88,24 @@ async def security_headers_middleware(request: Request, call_next):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     return response
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Rete di sicurezza per eccezioni non gestite esplicitamente dagli endpoint.
+
+    Le HTTPException sollevate volontariamente (404, 400, ecc.) non passano di
+    qui: FastAPI le gestisce con il proprio handler di default prima che
+    questo venga raggiunto. Questo handler intercetta solo bug/errori
+    imprevisti (es. IntegrityError non catturate, errori DB), logga lo stack
+    trace completo lato server e restituisce al client un JSON generico
+    invece dello stack trace grezzo.
+    """
+    logger.error(f"Eccezione non gestita su {request.method} {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Si è verificato un errore imprevisto. Riprova più tardi."}
+    )
 
 
 class _SlidingWindowRateLimiter:
@@ -722,26 +742,39 @@ async def save_llm_settings(
             {"user_id": user_uuid}
         )
         
-    if existing:
-        existing.base_url = body.base_url
-        existing.model = body.model
-        existing.encrypted_api_key = api_key_bytes_to_save
-        existing.is_active = body.is_active
-        existing.updated_at = datetime.now()
-    else:
-        new_setting = UserLLMSetting(
-            id=uuid.uuid4(),
-            user_id=user_uuid,
-            company_id=company_uuid,
-            provider=provider,
-            base_url=body.base_url,
-            model=body.model,
-            encrypted_api_key=api_key_bytes_to_save,
-            is_active=body.is_active
-        )
-        db.add(new_setting)
-        
-    await db.commit()
+    # Upsert atomico su (user_id, provider): usiamo INSERT ... ON CONFLICT
+    # invece di un select-then-branch perché quest'ultimo è soggetto a race
+    # condition (due richieste concorrenti, es. doppio click o due tab aperte,
+    # possono trovare entrambe "nessuna riga esistente" e tentare due INSERT,
+    # violando il vincolo unique su (user_id, provider)).
+    upsert_stmt = pg_insert(UserLLMSetting).values(
+        id=uuid.uuid4(),
+        user_id=user_uuid,
+        company_id=company_uuid,
+        provider=provider,
+        base_url=body.base_url,
+        model=body.model,
+        encrypted_api_key=api_key_bytes_to_save,
+        is_active=body.is_active,
+    ).on_conflict_do_update(
+        index_elements=[UserLLMSetting.user_id, UserLLMSetting.provider],
+        set_={
+            "base_url": body.base_url,
+            "model": body.model,
+            "encrypted_api_key": api_key_bytes_to_save,
+            "is_active": body.is_active,
+            "updated_at": datetime.now(),
+        }
+    )
+
+    try:
+        await db.execute(upsert_stmt)
+        await db.commit()
+    except IntegrityError as e:
+        await db.rollback()
+        logger.error(f"Errore salvataggio LLM settings per {provider} (utente {tenant['user_id']}): {e}")
+        raise HTTPException(status_code=400, detail="Impossibile salvare la configurazione, riprova")
+
     logger.info(f"LLM settings salvate/attivate per {provider} (utente {tenant['user_id']})")
     return {"status": "success"}
 

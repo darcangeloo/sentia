@@ -310,45 +310,12 @@ async function handleLogin(e) {
         state.userEmail = email;
         localStorage.setItem('rag_token', state.token);
         localStorage.setItem('rag_email', email);
-        
-        // 2. Recupera i dettagli del profilo e dell'azienda dal nuovo endpoint
-        const profileRes = await fetch(`${API_URL}/v1/users/me`, {
-            method: 'GET',
-            headers: { 
-                'Authorization': `Bearer ${state.token}`,
-                'Content-Type': 'application/json'
-            }
-        });
 
-        if (!profileRes.ok) {
-            throw new Error('Impossibile recuperare le informazioni del profilo aziendale');
-        }
-        
-        const data = await profileRes.json(); 
-        console.log("DATI RICEVUTI DAL SERVER:", data);
-
-        // 3. Mostra l'applicazione (generando e iniettando l'HTML della sidebar nel DOM)
+        // 2. Mostra l'applicazione (showApp() carica anche il nome azienda
+        // nella sidebar tramite loadCompanyName(), riusata anche al ripristino
+        // sessione da localStorage — vedi DOMContentLoaded)
         showApp();
-        
-        // 4. Ricerca l'elemento in modo ultra-flessibile per evitare errori 'null'
-        const sidebarTitle = document.getElementById("sidebar-title h3") 
-                          || document.querySelector(".sidebar-header h3") 
-                          || document.querySelector(".sidebar h3")
-                          || document.querySelector(".sidebar-brand h3");
 
-        // 5. Applica il testo solo se l'elemento è stato effettivamente individuato
-        if (sidebarTitle) {
-            if (data && data.company && data.company.name) {
-                sidebarTitle.textContent = data.company.name;
-            } else {
-                // Fallback nel caso in cui l'endpoint non risponda con l'oggetto atteso
-                const domainName = email.split('@')[1].split('.')[0];
-                sidebarTitle.textContent = domainName.charAt(0).toUpperCase() + domainName.slice(1);
-            }
-        } else {
-            console.warn("Elemento del titolo della sidebar non trovato nell'HTML corrente.");
-        }        
-        
         showToast('Accesso effettuato con successo!', 'success');
         
     } catch (err) {
@@ -413,7 +380,51 @@ function showApp() {
     loadDocuments();
     loadConversations();
     loadLLMSettings();
+    loadCompanyName();
     setView('chat');
+}
+
+async function loadCompanyName() {
+    // Ricerca l'elemento in modo ultra-flessibile per evitare errori 'null'
+    // su varianti di markup della sidebar.
+    const sidebarTitle = document.getElementById("sidebar-title h3")
+                      || document.querySelector(".sidebar-header h3")
+                      || document.querySelector(".sidebar h3")
+                      || document.querySelector(".sidebar-brand h3");
+
+    if (!sidebarTitle) {
+        console.warn("Elemento del titolo della sidebar non trovato nell'HTML corrente.");
+        return;
+    }
+
+    try {
+        const profileRes = await fetch(`${API_URL}/v1/users/me`, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${state.token}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (!profileRes.ok) {
+            throw new Error('Impossibile recuperare le informazioni del profilo aziendale');
+        }
+
+        const data = await profileRes.json();
+
+        if (data && data.company && data.company.name) {
+            sidebarTitle.textContent = data.company.name;
+            return;
+        }
+    } catch (err) {
+        console.warn('loadCompanyName: fallback al dominio email', err);
+    }
+
+    // Fallback nel caso in cui l'endpoint non risponda con l'oggetto atteso
+    if (state.userEmail && state.userEmail.includes('@')) {
+        const domainName = state.userEmail.split('@')[1].split('.')[0];
+        sidebarTitle.textContent = domainName.charAt(0).toUpperCase() + domainName.slice(1);
+    }
 }
 
 function setView(view) {

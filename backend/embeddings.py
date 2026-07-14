@@ -55,7 +55,7 @@ def get_embedding(text: str, max_retries: int = 6) -> list[float]:
             # Backoff esponenziale con jitter più ampio per assorbire instabilità
             # prolungate del router HF (il router a volte torna 500 ripetutamente
             # per diversi secondi consecutivi).
-            wait = min((3 ** attempt), 60) + np.random.uniform(0, 3)
+            wait = min((2 ** attempt) + np.random.uniform(0, 1), 8)
             logger.warning(
                 f"get_embedding: tentativo {attempt + 1}/{max_retries} fallito ({e}), "
                 f"nuovo tentativo tra {wait:.1f}s"
