@@ -74,6 +74,46 @@ function injectStaticIcons(root = document) {
     });
 }
 
+// ============================================================
+// SIGNATURE MICRO-INTERACTIONS
+// Magnetic buttons + cursor-tracking spotlight. GPU-only (transform and a
+// CSS custom property, never layout/paint-heavy properties), and skipped
+// entirely for anyone who has asked for reduced motion.
+// ============================================================
+const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function enableMagnetic(el, strength = 0.25, max = 6) {
+    if (!el || prefersReducedMotion) return;
+    el.addEventListener('mousemove', (e) => {
+        const rect = el.getBoundingClientRect();
+        const dx = e.clientX - (rect.left + rect.width / 2);
+        const dy = e.clientY - (rect.top + rect.height / 2);
+        const mx = Math.max(-max, Math.min(max, dx * strength));
+        const my = Math.max(-max, Math.min(max, dy * strength));
+        el.style.setProperty('--mx', `${mx}px`);
+        el.style.setProperty('--my', `${my}px`);
+    });
+    el.addEventListener('mouseleave', () => {
+        el.style.setProperty('--mx', '0px');
+        el.style.setProperty('--my', '0px');
+    });
+}
+
+function enableSpotlight(container) {
+    if (!container || prefersReducedMotion) return;
+    let pending = false;
+    container.addEventListener('pointermove', (e) => {
+        if (pending) return;
+        pending = true;
+        requestAnimationFrame(() => {
+            const rect = container.getBoundingClientRect();
+            container.style.setProperty('--spot-x', `${e.clientX - rect.left}px`);
+            container.style.setProperty('--spot-y', `${e.clientY - rect.top}px`);
+            pending = false;
+        });
+    });
+}
+
 const dom = {
     loginPage: $('#login-page'),
     appPage: $('#app-page'),
@@ -147,6 +187,9 @@ const dom = {
 // ============================================================
 document.addEventListener('DOMContentLoaded', () => {
     injectStaticIcons();
+    enableSpotlight(dom.loginPage);
+    enableMagnetic(dom.loginBtn);
+    enableMagnetic(dom.btnSend);
 
     if (state.token) {
         showApp();
@@ -324,8 +367,10 @@ function handleLogout() {
     state.documents = [];
     state.conversations = [];
     state.activeConversationId = null;
+    state.llmSettings = [];
     localStorage.removeItem('rag_token');
     localStorage.removeItem('rag_email');
+    resetLLMSettingsForm();
     showLogin();
     showToast('Disconnessione effettuata', 'info');
 }
@@ -942,7 +987,7 @@ function showTypingIndicator() {
     el.innerHTML = `
         <div class="message-avatar">${iconMarkup('sparkle', 'icon-sm')}</div>
         <div class="message-body">
-            <div class="message-sender">Assistente AI</div>
+            <div class="message-sender">Sentia</div>
             <div class="typing-indicator">
                 <span></span><span></span><span></span>
             </div>
@@ -959,15 +1004,17 @@ function createSourcesPanel(sources) {
     
     const toggle = document.createElement('button');
     toggle.className = 'sources-toggle';
+    toggle.setAttribute('aria-expanded', 'false');
     toggle.innerHTML = `${iconMarkup('search', 'icon-sm')} Fonti utilizzate (${sources.length}) <span class="chevron">${iconMarkup('chevron-down', 'icon-sm')}</span>`;
-    
+
     const list = document.createElement('div');
     list.className = 'sources-list';
-    
-    sources.forEach(src => {
+
+    sources.forEach((src, idx) => {
         const item = document.createElement('div');
         item.className = 'source-item';
-        
+        item.style.setProperty('--i', idx); // stagger per la comparsa dei riquadri fonte
+
         const pageInfo = src.page_number ? `Pagina ${src.page_number}` : '';
         const scoreHtml = src.relevance_score
             ? `<span class="source-score">${Math.round(src.relevance_score * 100)}% rilevanza</span>`
@@ -980,10 +1027,11 @@ function createSourcesPanel(sources) {
         `;
         list.appendChild(item);
     });
-    
+
     toggle.addEventListener('click', () => {
-        toggle.classList.toggle('expanded');
+        const expanded = toggle.classList.toggle('expanded');
         list.classList.toggle('visible');
+        toggle.setAttribute('aria-expanded', String(expanded));
     });
     
     panel.appendChild(toggle);
@@ -1029,7 +1077,7 @@ async function loadLLMSettings() {
     }
 }
 
-function renderLLMSettings() {
+function resetLLMSettingsForm() {
     // Reset cards to default inactive
     $$('.provider-card').forEach(c => {
         c.classList.remove('active');
@@ -1041,13 +1089,26 @@ function renderLLMSettings() {
     $$('.btn-delete-provider').forEach(b => {
         b.classList.add('hidden');
     });
-    
-    // Clear inputs values
-    dom.openaiApiKey.placeholder = 'Inserisci API Key...';
-    dom.anthropicApiKey.placeholder = 'Inserisci API Key...';
-    dom.geminiApiKey.placeholder = 'Inserisci API Key...';
-    
-    // Populate based on saved settings
+
+    // Svuota davvero i campi (non solo il placeholder): senza questo, la
+    // chiave API digitata da un utente resta nel DOM e viene mostrata anche
+    // al prossimo utente che accede dallo stesso dispositivo/tab.
+    [dom.openaiApiKey, dom.anthropicApiKey, dom.geminiApiKey].forEach(input => {
+        input.value = '';
+        input.placeholder = 'Inserisci API Key...';
+    });
+    [dom.openaiBaseUrl, dom.anthropicBaseUrl, dom.geminiBaseUrl].forEach(input => {
+        input.value = '';
+    });
+    [dom.openaiModel, dom.anthropicModel, dom.geminiModel].forEach(select => {
+        select.selectedIndex = 0;
+    });
+}
+
+function renderLLMSettings() {
+    resetLLMSettingsForm();
+
+    // Popola in base alle impostazioni salvate
     state.llmSettings.forEach(s => {
         const prov = s.provider;
         const card = $(`#card-${prov}`);

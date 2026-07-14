@@ -5,8 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Sentia — Assistente AI aziendale basato su documenti interni">
     <title>Sentia Assistant</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="style.css">
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230fa968'/><text x='16' y='22' font-family='Arial,sans-serif' font-size='16' font-weight='700' fill='white' text-anchor='middle'>S</text></svg>">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%231f5d42'/><text x='16' y='22' font-family='Georgia,serif' font-size='16' font-weight='600' fill='white' text-anchor='middle'>S</text></svg>">
 </head>
 <body>
 
@@ -17,7 +19,7 @@
                 <span class="login-logo-icon">S</span>
                 <h1>Sentia</h1>
             </div>
-            <p class="login-subtitle">Accedi al workspace aziendale con le credenziali fornite per interrogare i tuoi documenti</p>
+            <p class="login-subtitle">Accedi con le credenziali della tua azienda per consultare i documenti interni</p>
             
             <form id="login-form">
                 <div class="form-group">
@@ -131,10 +133,10 @@
                     <!-- Welcome state -->
                     <div id="chat-welcome" class="chat-welcome">
                         <div class="welcome-icon" data-icon="sparkle"></div>
-                        <h2 class="welcome-title">Benvenuto!</h2>
+                        <h2 class="welcome-title">Chiedi ai tuoi documenti</h2>
                         <p class="welcome-subtitle">
-                            Sono il tuo assistente AI aziendale. Posso rispondere alle tue domande
-                            basandomi sui documenti interni caricati nel sistema.
+                            Le risposte arrivano dai file che la tua azienda ha caricato,
+                            con la fonte citata riga per riga.
                         </p>
                         <div class="welcome-suggestions">
                             <button class="suggestion-chip" data-query="Quali sono le politiche aziendali principali?">Politiche aziendali</button>
@@ -156,7 +158,7 @@
                             ></textarea>
                             <button id="btn-send" class="btn-send" disabled title="Invia messaggio" aria-label="Invia messaggio"><span data-icon="send"></span></button>
                         </div>
-                        <p class="chat-disclaimer">Le risposte sono generate dall'AI basandosi sui documenti aziendali caricati</p>
+                        <p class="chat-disclaimer">Le risposte si basano sui documenti aziendali caricati</p>
                     </div>
                 </div>
             </div>
@@ -164,8 +166,8 @@
             <!-- --- Settings View --- -->
             <div id="settings-view" class="settings-view hidden">
                 <div class="settings-view-header">
-                    <h2>Impostazioni Provider LLM</h2>
-                    <p>Configura i provider di Intelligenza Artificiale attivi per il tuo account aziendale.</p>
+                    <h2>Provider</h2>
+                    <p>Scegli quale servizio genera le risposte per il tuo account.</p>
                 </div>
                 
                 <div class="settings-view-content">
