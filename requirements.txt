@@ -28,4 +28,3 @@ python-multipart
 aiofiles
 python-dotenv
 numpy
-thrading
