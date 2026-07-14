@@ -1493,6 +1493,22 @@ body {
   max-width: 1000px;
 }
 
+.btn-back-settings {
+  display: none;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: var(--space-xs);
+  margin-right: var(--space-sm);
+  border-radius: var(--radius-sm);
+}
+
+.btn-back-settings .icon {
+  width: 18px;
+  height: 18px;
+}
+
 .settings-view-header h2 {
   font-size: var(--font-size-xl);
   font-weight: 600;
@@ -1752,6 +1768,19 @@ body {
   .mobile-menu-btn {
     display: inline-flex;
     align-items: center;
+  }
+
+  /* Show back arrow in settings header on phone layouts */
+  .btn-back-settings {
+    display: inline-flex;
+    align-items: center;
+    color: var(--text-secondary);
+  }
+
+  .settings-view-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
   }
 
   .mobile-overlay {

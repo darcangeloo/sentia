@@ -60,6 +60,7 @@ const ICONS = {
     menu: '<path d="M3 5.5h14M3 10h14M3 14.5h14"/>',
     logout: '<path d="M8 4H4.5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1H8"/><path d="M12.5 14l4-4-4-4"/><path d="M16 10H7.5"/>',
     close: '<path d="M5 5l10 10M15 5L5 15"/>',
+    arrow-left: '<path d="M13 5l-6 5 6 5"/><path d="M7 10h8"/>',
 };
 
 function iconMarkup(name, extraClass = '') {
@@ -179,6 +180,7 @@ const dom = {
     geminiModel: $('#gemini-model'),
     geminiDeleteBtn: $('#gemini-delete-btn'),
     geminiStatusBadge: $('#gemini-status-badge'),
+    btnBackSettings: $('#btn-back-home'),
 };
 
 
@@ -253,6 +255,13 @@ function setupEventListeners() {
         setView('settings');
         closeSidebar();
     });
+
+    // Back button on settings (mobile)
+    if (dom.btnBackSettings) {
+        dom.btnBackSettings.addEventListener('click', () => {
+            setView('chat');
+        });
+    }
     
     // Save provider settings
     $$('.btn-save-provider').forEach(btn => {
