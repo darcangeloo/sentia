@@ -1,7 +1,7 @@
 import logging
 import asyncio
 import time
-import random
+import numpy as np
 from huggingface_hub import InferenceClient
 from huggingface_hub.errors import HfHubHTTPError
 
@@ -49,7 +49,7 @@ def get_embedding(text: str, max_retries: int = 3) -> list[float]:
                 is_last_attempt = attempt == max_retries - 1
                 if is_last_attempt:
                     raise
-                wait = (2 ** attempt) + random.uniform(0, 1)
+                wait = (2 ** attempt) + np.random.uniform(0, 1)
                 time.sleep(wait)
 
             raise RuntimeError("Retry loop terminato senza risultato")
