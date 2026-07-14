@@ -68,8 +68,9 @@ class Document(Base):
 
 class Chunk(Base):
     """Modello ORM per i chunks vettoriali.
-    
-    Nota: la colonna 'embedding' è di tipo vector(768) in PostgreSQL (pgvector).
+
+    Nota: la colonna 'embedding' è di tipo vector(1536) in PostgreSQL (pgvector),
+    dimensione dell'output di Gemini Embedding (EMBEDDING_DIMENSIONS).
     SQLAlchemy non ha un tipo nativo per vector, quindi usiamo TEXT per l'ORM
     e raw SQL per le operazioni vettoriali (insert con cast, cosine distance).
     """
@@ -80,7 +81,7 @@ class Chunk(Base):
     text = Column(TEXT, nullable=False)
     page_number = Column(Integer, nullable=True)  # Pagina di provenienza
     chunk_index = Column(Integer, nullable=True)   # Posizione nel documento
-    # embedding: vector(768) — gestito via raw SQL, non come colonna ORM
+    # embedding: vector(1536) — gestito via raw SQL, non come colonna ORM
     
     # Relationships
     document = relationship("Document", back_populates="chunks")

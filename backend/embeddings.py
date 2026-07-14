@@ -2,8 +2,9 @@ import logging
 import asyncio
 import threading
 import numpy as np
-from huggingface_hub import InferenceClient
-from huggingface_hub.errors import HfHubHTTPError
+from google import genai
+from google.genai import types
+from google.genai.errors import APIError
 
 from backend.config import get_settings
 
@@ -12,7 +13,7 @@ settings = get_settings()
 
 _client = None
 
-# Limita le chiamate concorrenti verso l'API HuggingFace durante il batch
+# Limita le chiamate concorrenti verso l'API Gemini durante il batch
 # embedding: senza questo semaforo, un documento con centinaia di chunk
 # lancerebbe altrettanti thread/richieste HTTP simultanee.
 _embedding_semaphore = asyncio.Semaphore(settings.EMBEDDING_CONCURRENCY)
@@ -22,12 +23,10 @@ def _get_client():
     global _client
 
     if _client is None:
-        _client = InferenceClient(
-            api_key=settings.HF_TOKEN
-        )
+        _client = genai.Client(api_key=settings.GEMINI_EMBEDDING_API_KEY)
         logger.info(
-            f"HuggingFace embedding client inizializzato "
-            f"(model={settings.EMBEDDING_MODEL})"
+            f"Gemini embedding client inizializzato "
+            f"(model={settings.EMBEDDING_MODEL}, dim={settings.EMBEDDING_DIMENSIONS})"
         )
 
     return _client
@@ -40,12 +39,15 @@ def get_embedding(text: str, max_retries: int = 6) -> list[float]:
 
     for attempt in range(max_retries):
         try:
-            response = client.feature_extraction(
-                clean_text,
-                model=settings.EMBEDDING_MODEL
+            response = client.models.embed_content(
+                model=settings.EMBEDDING_MODEL,
+                contents=clean_text,
+                config=types.EmbedContentConfig(
+                    output_dimensionality=settings.EMBEDDING_DIMENSIONS
+                ),
             )
-            return response
-        except HfHubHTTPError as e:
+            return response.embeddings[0].values
+        except APIError as e:
             is_last_attempt = attempt == max_retries - 1
             if is_last_attempt:
                 logger.error(
@@ -53,8 +55,8 @@ def get_embedding(text: str, max_retries: int = 6) -> list[float]:
                 )
                 raise
             # Backoff esponenziale con jitter più ampio per assorbire instabilità
-            # prolungate del router HF (il router a volte torna 500 ripetutamente
-            # per diversi secondi consecutivi).
+            # prolungate dell'API (a volte torna 500/429 ripetutamente per
+            # diversi secondi consecutivi).
             wait = min((2 ** attempt) + np.random.uniform(0, 1), 8)
             logger.warning(
                 f"get_embedding: tentativo {attempt + 1}/{max_retries} fallito ({e}), "

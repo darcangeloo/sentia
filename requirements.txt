@@ -16,7 +16,7 @@ bcrypt
 # === LLM e AI ===
 openai
 google-generativeai
-huggingface_hub
+google-genai
 httpx
 
 # === Document Processing ===

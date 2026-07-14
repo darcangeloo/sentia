@@ -22,9 +22,12 @@ class Settings(BaseSettings):
     # === Crittografia ===
     MASTER_KEY: str
     # === Embedding ===
-    EMBEDDING_MODEL: str = "BAAI/bge-m3"
-    EMBEDDING_CONCURRENCY: int = 5  # Chiamate parallele max verso l'API HuggingFace
-    HF_TOKEN: str
+    # Servizio centralizzato (una sola key, non per-tenant) per generare gli
+    # embedding di indicizzazione documenti via Google Gemini Embedding API.
+    EMBEDDING_MODEL: str = "gemini-embedding-001"
+    EMBEDDING_DIMENSIONS: int = 1536
+    EMBEDDING_CONCURRENCY: int = 5  # Chiamate parallele max verso l'API Gemini
+    GEMINI_EMBEDDING_API_KEY: str = ""
 
     # === RAG Pipeline ===
     CHUNK_SIZE: int = 1000

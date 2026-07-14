@@ -167,9 +167,9 @@ async def process_pdf_and_chunk(file_path: str, company_id: str, doc_id: str):
 
             logger.info(f"Generati {len(chunks_with_metadata)} chunks dal documento {doc_id}")
 
-            # === FASE 3: Embedding via HuggingFace Inference API ===
+            # === FASE 3: Embedding via Google Gemini Embedding API ===
             # BATCH_SIZE qui limita la concorrenza lato nostro; il vero rate
-            # limiting verso HF è gestito dal semaforo dentro embeddings.py.
+            # limiting verso Gemini è gestito dal semaforo dentro embeddings.py.
             BATCH_SIZE = 32
             all_texts = [c["text"] for c in chunks_with_metadata]
             all_vectors = []
