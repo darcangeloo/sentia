@@ -1,6 +1,9 @@
 import logging
 import asyncio
+import time
+import random
 from huggingface_hub import InferenceClient
+from huggingface_hub.errors import HfHubHTTPError
 
 from backend.config import get_settings
 
@@ -30,17 +33,26 @@ def _get_client():
     return _client
 
 
-def get_embedding(text: str) -> list[float]:
+def get_embedding(text: str, max_retries: int = 3) -> list[float]:
     client = _get_client()
 
     clean_text = " ".join(text.split())
 
-    response = client.feature_extraction(
-        clean_text,
-        model=settings.EMBEDDING_MODEL
-    )
+    for attempt in range(max_retries):
+            try:
+                response = client.feature_extraction(
+                    clean_text,
+                    model=settings.EMBEDDING_MODEL
+                )
+                return response
+            except HfHubHTTPError as e:
+                is_last_attempt = attempt == max_retries - 1
+                if is_last_attempt:
+                    raise
+                wait = (2 ** attempt) + random.uniform(0, 1)
+                time.sleep(wait)
 
-    return response.tolist()
+            raise RuntimeError("Retry loop terminato senza risultato")
 
 
 async def get_embedding_async(text: str):
