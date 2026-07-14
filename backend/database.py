@@ -192,6 +192,12 @@ async def verify_and_migrate_db():
             )
         """))
         
+        # Aggiungi error_message a documents se non esiste (messaggio leggibile
+        # quando l'elaborazione di un documento fallisce, es. embedding HF)
+        await conn.execute(sqlalchemy_text("""
+            ALTER TABLE documents ADD COLUMN IF NOT EXISTS error_message TEXT
+        """))
+
         # Crea gli indici se non esistono
         await conn.execute(sqlalchemy_text("CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id)"))
         await conn.execute(sqlalchemy_text("CREATE INDEX IF NOT EXISTS idx_conversations_company_id ON conversations(company_id)"))
