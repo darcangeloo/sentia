@@ -51,6 +51,7 @@ class Document(Base):
     filename = Column(String(500))
     storage_path = Column(TEXT)
     status = Column(String(20), default="processing")  # processing, ready, error
+    error_message = Column(TEXT, nullable=True)
     page_count = Column(Integer, nullable=True)
     chunk_count = Column(Integer, nullable=True, default=0)
     created_at = Column(TIMESTAMP, server_default="NOW()")

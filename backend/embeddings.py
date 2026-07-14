@@ -33,7 +33,7 @@ def _get_client():
     return _client
 
 
-def get_embedding(text: str, max_retries: int = 3) -> list[float]:
+def get_embedding(text: str, max_retries: int = 6) -> list[float]:
     client = _get_client()
 
     clean_text = " ".join(text.split())
@@ -45,11 +45,21 @@ def get_embedding(text: str, max_retries: int = 3) -> list[float]:
                 model=settings.EMBEDDING_MODEL
             )
             return response
-        except HfHubHTTPError:
+        except HfHubHTTPError as e:
             is_last_attempt = attempt == max_retries - 1
             if is_last_attempt:
+                logger.error(
+                    f"get_embedding: esauriti {max_retries} tentativi, ultimo errore: {e}"
+                )
                 raise
-            wait = (2 ** attempt) + np.random.uniform(0, 1)
+            # Backoff esponenziale con jitter più ampio per assorbire instabilità
+            # prolungate del router HF (il router a volte torna 500 ripetutamente
+            # per diversi secondi consecutivi).
+            wait = min((3 ** attempt), 60) + np.random.uniform(0, 3)
+            logger.warning(
+                f"get_embedding: tentativo {attempt + 1}/{max_retries} fallito ({e}), "
+                f"nuovo tentativo tra {wait:.1f}s"
+            )
             threading.Event().wait(wait)
 
     raise RuntimeError("Retry loop terminato senza risultato")

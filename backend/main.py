@@ -281,6 +281,7 @@ async def get_documents(tenant: dict = Depends(get_current_tenant), db: AsyncSes
         "id": str(d.id), 
         "filename": d.filename,
         "status": d.status or "ready",
+        "error_message": d.error_message,
         "page_count": d.page_count,
         "chunk_count": d.chunk_count,
     } for d in docs]
@@ -304,6 +305,7 @@ async def get_document_status(doc_id: str, tenant: dict = Depends(get_current_te
         "id": str(doc.id),
         "filename": doc.filename,
         "status": doc.status or "ready",
+        "error_message": doc.error_message,
         "page_count": doc.page_count,
         "chunk_count": doc.chunk_count,
     }

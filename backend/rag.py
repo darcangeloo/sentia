@@ -122,9 +122,16 @@ async def process_pdf_and_chunk(file_path: str, company_id: str, doc_id: str):
 
             pages_text, total_pages = await asyncio.to_thread(_extract_pdf)
 
+            if not await _document_still_exists(db, doc_id):
+                logger.info(f"Documento {doc_id} cancellato durante l'estrazione testo, interrompo l'elaborazione")
+                return
+
             if not pages_text:
                 logger.warning(f"Nessun testo estratto dal documento {doc_id}")
-                await _update_document_status(db, doc_id, "error", total_pages, 0)
+                await _update_document_status(
+                    db, doc_id, "error", total_pages, 0,
+                    error_message="Nessun testo estraibile dal PDF (documento vuoto, scansionato o protetto)"
+                )
                 return
 
             logger.info(f"Estratte {len(pages_text)} pagine con testo da {total_pages} pagine totali")
@@ -152,7 +159,10 @@ async def process_pdf_and_chunk(file_path: str, company_id: str, doc_id: str):
 
             if not chunks_with_metadata:
                 logger.warning(f"Nessun chunk generato per il documento {doc_id}")
-                await _update_document_status(db, doc_id, "error", total_pages, 0)
+                await _update_document_status(
+                    db, doc_id, "error", total_pages, 0,
+                    error_message="Nessun chunk generato dal testo estratto"
+                )
                 return
 
             logger.info(f"Generati {len(chunks_with_metadata)} chunks dal documento {doc_id}")
@@ -163,14 +173,37 @@ async def process_pdf_and_chunk(file_path: str, company_id: str, doc_id: str):
             BATCH_SIZE = 32
             all_texts = [c["text"] for c in chunks_with_metadata]
             all_vectors = []
+            total_batches = (len(all_texts) - 1) // BATCH_SIZE + 1
 
             for i in range(0, len(all_texts), BATCH_SIZE):
+                batch_num = i // BATCH_SIZE + 1
+
+                # Controllo cancellazione: se il documento è stato eliminato
+                # (es. dall'utente) mentre eravamo ancora in elaborazione, ci
+                # fermiamo subito invece di continuare a spendere chiamate
+                # embedding su un documento che non esiste più. Il controllo
+                # è per-batch (ogni BATCH_SIZE chunk) per non aggiungere una
+                # query DB per ogni singolo chunk.
+                if not await _document_still_exists(db, doc_id):
+                    logger.info(
+                        f"Documento {doc_id} cancellato durante l'elaborazione "
+                        f"(batch {batch_num}/{total_batches}), interrompo l'embedding"
+                    )
+                    return
+
                 batch = all_texts[i:i + BATCH_SIZE]
-                logger.info(
-                    f"Embedding batch {i // BATCH_SIZE + 1}/{(len(all_texts) - 1) // BATCH_SIZE + 1} "
-                    f"({len(batch)} chunks)"
-                )
-                batch_vectors = await get_embeddings_batch_async(batch)
+                logger.info(f"Embedding batch {batch_num}/{total_batches} ({len(batch)} chunks)")
+
+                try:
+                    batch_vectors = await get_embeddings_batch_async(batch)
+                except Exception as embed_err:
+                    logger.error(
+                        f"❌ Embedding fallito per il documento {doc_id}, "
+                        f"batch {batch_num}/{total_batches} (chunks {i}-{i + len(batch) - 1}): {embed_err}",
+                        exc_info=True
+                    )
+                    raise
+
                 all_vectors.extend(batch_vectors)
 
             # === FASE 4: Inserimento nel database (batch, singola round-trip) ===
@@ -194,7 +227,7 @@ async def process_pdf_and_chunk(file_path: str, company_id: str, doc_id: str):
             ]
             await db.execute(insert_sql, chunk_rows)
             await db.commit()
-            await _update_document_status(db, doc_id, "ready", total_pages, len(chunks_with_metadata))
+            await _update_document_status(db, doc_id, "ready", total_pages, len(chunks_with_metadata), error_message=None)
 
             logger.info(f"✅ Documento {doc_id} elaborato con successo: {len(chunks_with_metadata)} chunks indicizzati")
 
@@ -202,15 +235,40 @@ async def process_pdf_and_chunk(file_path: str, company_id: str, doc_id: str):
             logger.error(f"❌ Errore elaborazione documento {doc_id}: {e}", exc_info=True)
             await db.rollback()
             try:
-                await _update_document_status(db, doc_id, "error", 0, 0)
+                if await _document_still_exists(db, doc_id):
+                    await _update_document_status(db, doc_id, "error", 0, 0, error_message=str(e))
+                else:
+                    logger.info(f"Documento {doc_id} non più presente nel DB, salto l'aggiornamento di stato")
             except Exception:
-                pass
+                logger.error(f"Impossibile aggiornare lo stato di errore per il documento {doc_id}", exc_info=True)
 
 
-async def _update_document_status(db: AsyncSession, doc_id: str, status: str, page_count: int, chunk_count: int):
+async def _document_still_exists(db: AsyncSession, doc_id: str) -> bool:
+    """Verifica che il documento esista ancora nel DB.
+
+    Usato per interrompere l'elaborazione in background se l'utente ha
+    cancellato il documento mentre l'embedding era ancora in corso, evitando
+    di continuare a spendere chiamate verso l'API di embedding a vuoto.
+    """
+    result = await db.execute(
+        sqlalchemy_text("SELECT 1 FROM documents WHERE id = :doc_id"),
+        {"doc_id": doc_id}
+    )
+    return result.first() is not None
+
+
+async def _update_document_status(
+    db: AsyncSession,
+    doc_id: str,
+    status: str,
+    page_count: int,
+    chunk_count: int,
+    error_message: str | None = None
+):
     """Aggiorna lo stato di elaborazione di un documento."""
     sql = sqlalchemy_text("""
-        UPDATE documents SET status = :status, page_count = :page_count, chunk_count = :chunk_count
+        UPDATE documents SET status = :status, page_count = :page_count,
+            chunk_count = :chunk_count, error_message = :error_message
         WHERE id = :doc_id
     """)
     await db.execute(sql, {
@@ -218,6 +276,7 @@ async def _update_document_status(db: AsyncSession, doc_id: str, status: str, pa
         "status": status,
         "page_count": page_count,
         "chunk_count": chunk_count,
+        "error_message": error_message,
     })
     await db.commit()
 
