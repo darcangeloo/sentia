@@ -158,6 +158,11 @@ async def verify_and_migrate_db():
     """Verifica lo stato del database e applica le migrazioni per le nuove tabelle/colonne."""
     logger.info("Verifica e migrazione database in corso...")
     async with engine.begin() as conn:
+        # pg_trgm: usato dal fallback fuzzy del retrieval esaustivo (rag.py),
+        # quando il nome cercato non compare mai con la grafia esatta
+        # (abbreviazioni, errori di OCR, spaziature anomale).
+        await conn.execute(sqlalchemy_text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+
         # Crea la tabella conversations se non esiste
         await conn.execute(sqlalchemy_text("""
             CREATE TABLE IF NOT EXISTS conversations (

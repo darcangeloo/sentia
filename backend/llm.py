@@ -25,7 +25,27 @@ Regole fondamentali:
 3. Cita le fonti quando possibile (nome del file o sezione)
 4. Usa un tono professionale ma accessibile
 5. Struttura le risposte in modo chiaro con elenchi puntati quando appropriato
-6. Non inventare mai informazioni non presenti nel contesto"""
+6. Non inventare mai informazioni non presenti nel contesto
+7. Quando ti viene chiesto un elenco, riporta OGNI singola voce presente nel contesto: non troncare, non riassumere, non scrivere mai "e altri", "ecc." o "..."
+8. Quando produci un elenco, dichiara sempre quante voci hai trovato"""
+
+# Prompt dedicato all'estrazione strutturata (percorso esaustivo).
+# Volutamente separato da SYSTEM_PROMPT: qui non serve tono discorsivo né
+# citazione delle fonti, serve solo JSON accurato e completo.
+EXTRACTION_SYSTEM_PROMPT = """Sei un estrattore di dati. Ricevi frammenti di documenti e devi estrarre TUTTE le righe che soddisfano il criterio richiesto.
+
+Regole assolute:
+1. Rispondi ESCLUSIVAMENTE con JSON valido, senza testo prima o dopo, senza blocchi markdown
+2. Estrai OGNI riga corrispondente, anche se sembra duplicata di un'altra
+3. Non riassumere, non aggregare, non omettere nulla
+4. Non calcolare totali: riporta solo le singole righe
+5. Se un frammento non contiene righe corrispondenti, non inventarle
+6. Riporta gli importi esattamente come appaiono nel documento"""
+
+
+# Numero massimo di token in output. Un elenco di decine di movimenti supera
+# facilmente i 2048 token: un valore basso troncava le risposte a metà.
+MAX_OUTPUT_TOKENS = 8192
 
 
 # --- Supporto Multi-Provider Asincrono ---
@@ -92,13 +112,16 @@ async def generate_anthropic(model: str, api_key: str, base_url: str | None, mes
         "anthropic-version": "2023-06-01",
         "content-type": "application/json"
     }
+    # max_tokens è obbligatorio nella Messages API di Anthropic: senza,
+    # la richiesta viene respinta con 400.
     payload = {
         "model": model,
         "messages": messages,
         "system": system,
+        "max_tokens": MAX_OUTPUT_TOKENS,
         "temperature": 0.1
     }
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=120.0) as client:
         response = await client.post(url, headers=headers, json=payload)
         if response.status_code != 200:
             raise Exception(f"Anthropic API error: {response.status_code} - {response.text}")
@@ -118,10 +141,11 @@ async def generate_anthropic_stream(model: str, api_key: str, base_url: str | No
         "model": model,
         "messages": messages,
         "system": system,
+        "max_tokens": MAX_OUTPUT_TOKENS,
         "temperature": 0.1,
         "stream": True
     }
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=120.0) as client:
         async with client.stream("POST", url, headers=headers, json=payload) as response:
             if response.status_code != 200:
                 err_text = await response.aread()
@@ -138,10 +162,13 @@ async def generate_anthropic_stream(model: str, api_key: str, base_url: str | No
 
 
 def _extract_gemini_user_content(messages: list) -> str:
-    for msg in messages:
-        if msg["role"] == "user":
-            return msg["content"]
-    return ""
+    """Concatena tutti i messaggi user in un unico blocco di testo.
+
+    L'SDK Gemini usato qui riceve una lista piatta di contenuti, non messaggi
+    con ruolo: unire tutti i messaggi user evita di perdere silenziosamente
+    quelli dopo il primo.
+    """
+    return "\n\n".join(msg["content"] for msg in messages if msg["role"] == "user")
 
 
 def _generate_gemini_sync(model: str, api_key: str, messages: list, system: str) -> str:
@@ -156,7 +183,7 @@ def _generate_gemini_sync(model: str, api_key: str, messages: list, system: str)
         contents,
         generation_config=genai.types.GenerationConfig(
             temperature=0.1,
-            max_output_tokens=2048
+            max_output_tokens=MAX_OUTPUT_TOKENS
         )
     )
     return response.text
@@ -231,6 +258,38 @@ async def generate_gemini_stream(model: str, api_key: str, messages: list, syste
     except Exception as e:
         logger.error(f"Errore Gemini stream: {e}", exc_info=True)
         yield "\n\nErrore di comunicazione con Gemini. Riprova più tardi."
+
+
+async def generate_raw_async(
+    system: str,
+    user_message: str,
+    tenant: dict | None = None,
+    db: AsyncSession | None = None,
+) -> str:
+    """Esegue una chiamata LLM non-stream con prompt arbitrario.
+
+    Usata dal router di query e dall'estrattore map-reduce, che hanno bisogno
+    di parlare col provider del cliente ma con prompt propri, non con
+    SYSTEM_PROMPT e senza il formato domanda/contesto della chat.
+    """
+    config = await get_active_provider_config(tenant, db)
+    if not config:
+        raise HTTPException(
+            status_code=400,
+            detail="Nessun provider LLM attivo. Configura ed attiva OpenAI, Anthropic o Gemini nelle impostazioni."
+        )
+
+    provider = config["provider"]
+    model = config["model"]
+    messages = [{"role": "user", "content": user_message}]
+
+    if provider == "openai":
+        return await generate_openai_response(model, config["api_key"], config["base_url"], messages, system)
+    elif provider == "anthropic":
+        return await generate_anthropic(model, config["api_key"], config["base_url"], messages, system)
+    elif provider == "gemini":
+        return await generate_gemini(model, config["api_key"], messages, system)
+    raise Exception(f"Provider LLM non supportato: {provider}")
 
 
 async def generate_answer_async(user_query: str, context: str, history: str = "",tenant: dict | None = None, db: AsyncSession | None = None) -> str:

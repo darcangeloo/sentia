@@ -897,6 +897,13 @@ async function handleSendMessage() {
                         
                         if (event.type === 'sources') {
                             sources = event.data;
+                        } else if (event.type === 'status') {
+                            // Le query esaustive impiegano diversi secondi
+                            // prima del primo token: mostriamo intanto lo
+                            // stato di avanzamento, sovrascritto appena
+                            // arriva la risposta vera.
+                            contentEl.innerHTML = `<p style="opacity:0.7"><em>${escapeHtml(event.data)}</em></p>`;
+                            scrollToBottom();
                         } else if (event.type === 'token') {
                             fullContent += event.data;
                             contentEl.innerHTML = formatMarkdown(fullContent);

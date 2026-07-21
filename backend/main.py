@@ -471,6 +471,10 @@ async def chat_stream(body: ChatRequest, tenant: dict = Depends(get_current_tena
             if event["type"] == "sources":
                 sources_data = event["data"]
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            elif event["type"] == "status":
+                # Avanzamento del percorso esaustivo: mostrato all'utente ma
+                # non salvato nella cronologia, non fa parte della risposta.
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             elif event["type"] == "token":
                 full_answer.append(event["data"])
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
