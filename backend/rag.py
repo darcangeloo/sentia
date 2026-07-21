@@ -125,10 +125,26 @@ HYBRID_SEARCH_SQL = sqlalchemy_text("""
     LIMIT :max_chunks
 """)
 
-# Retrieval esaustivo: un FILTRO, non un ranking. Restituisce ogni chunk che
-# cita l'entità, in ordine di documento/pagina. Nessuna soglia di similarità,
-# nessun top-k: è l'unico modo per garantire che non manchi un pagamento.
+# Retrieval esaustivo: un FILTRO, non un ranking. Nessuna soglia di
+# similarità, nessun top-k: è l'unico modo per garantire che non manchi
+# un pagamento.
+#
+# L'unità di recupero è il DOCUMENTO, non il singolo chunk: individuati i
+# documenti che citano il soggetto, se ne analizzano tutti i chunk. Filtrare
+# per chunk sembra più economico ma perde sistematicamente le righe in cui
+# il soggetto non è ripetuto — è il caso dell'intestatario di un estratto
+# conto, che compare solo nell'intestazione mentre i movimenti che lo
+# riguardano nominano solo la controparte.
 EXHAUSTIVE_SEARCH_SQL = sqlalchemy_text("""
+    WITH matched_documents AS (
+        SELECT DISTINCT c.document_id
+        FROM chunks c
+        WHERE c.company_id = :company_id
+          AND (
+            c.text ILIKE ANY(CAST(:like_patterns AS text[]))
+            OR (:ts_query <> '' AND c.text_search @@ to_tsquery('italian', :ts_query))
+          )
+    )
     SELECT
         c.text,
         c.page_number,
@@ -137,10 +153,7 @@ EXHAUSTIVE_SEARCH_SQL = sqlalchemy_text("""
     FROM chunks c
     JOIN documents d ON c.document_id = d.id
     WHERE c.company_id = :company_id
-      AND (
-        c.text ILIKE ANY(CAST(:like_patterns AS text[]))
-        OR (:ts_query <> '' AND c.text_search @@ to_tsquery('italian', :ts_query))
-      )
+      AND c.document_id IN (SELECT document_id FROM matched_documents)
     ORDER BY d.filename, c.page_number, c.chunk_index
     LIMIT :hard_cap
 """)
@@ -156,9 +169,14 @@ EXHAUSTIVE_FUZZY_SQL = sqlalchemy_text("""
     FROM chunks c
     JOIN documents d ON c.document_id = d.id
     WHERE c.company_id = :company_id
-      AND EXISTS (
-        SELECT 1 FROM unnest(CAST(:terms AS text[])) AS t(term)
-        WHERE word_similarity(t.term, c.text) > :threshold
+      AND c.document_id IN (
+        SELECT DISTINCT c2.document_id
+        FROM chunks c2
+        WHERE c2.company_id = :company_id
+          AND EXISTS (
+            SELECT 1 FROM unnest(CAST(:terms AS text[])) AS t(term)
+            WHERE word_similarity(t.term, c2.text) > :threshold
+          )
       )
     ORDER BY d.filename, c.page_number, c.chunk_index
     LIMIT :hard_cap
@@ -653,7 +671,10 @@ async def _retrieve_exhaustive(tenant: dict, search_terms: list[str], db: AsyncS
             f"l'elenco risultante potrebbe essere parziale"
         )
 
-    logger.info(f"Retrieval esaustivo: {len(rows)} chunk recuperati per {search_terms}")
+    logger.info(
+        f"Retrieval esaustivo: {len(rows)} chunk da {len({r.filename for r in rows})} "
+        f"documenti per {search_terms}"
+    )
     return rows, truncated
 
 

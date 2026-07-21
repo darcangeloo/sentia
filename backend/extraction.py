@@ -101,6 +101,31 @@ def _normalize_description(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(text or "").casefold()).strip()
 
 
+def _dedup_text(record: dict) -> str:
+    """Descrizione normalizzata con l'importo del record rimosso.
+
+    Il layout su più righe fa sì che a volte l'estrattore inglobi l'importo
+    nella descrizione ("Luca Bianchi € 120,00 Causale: ..."): confrontando le
+    descrizioni così com'sono, quel record non risulta il duplicato della
+    versione senza importo e il pagamento viene contato due volte.
+
+    Si toglie solo la sequenza di cifre corrispondente all'importo del record,
+    non tutte le cifre: numeri di fattura o di pratica devono restare, perché
+    sono proprio ciò che distingue due movimenti di pari data e importo.
+    """
+    desc = _normalize_description(record.get("descrizione"))
+    amount_digits = re.sub(r"\D", "", str(record.get("importo") or ""))
+    if amount_digits:
+        # La normalizzazione ha già trasformato "120,00" in "120 00", quindi
+        # si confrontano le sequenze di cifre eventualmente spezzate da spazi.
+        desc = re.sub(
+            r"\d[\d ]*\d|\d",
+            lambda m: " " if m.group().replace(" ", "") == amount_digits else m.group(),
+            desc,
+        )
+    return re.sub(r"\s+", " ", desc).strip()
+
+
 def _sort_key(record: dict):
     """Ordina per data quando è riconoscibile, altrimenti in coda.
 
@@ -164,16 +189,13 @@ def _deduplicate(raw_records: list[dict]) -> list[dict]:
         # prima di sé la propria versione completa.
         candidates = sorted(
             groups[key],
-            key=lambda r: len(_normalize_description(r.get("descrizione"))),
+            key=lambda r: len(_dedup_text(r)),
             reverse=True,
         )
         kept: list[dict] = []
         for record in candidates:
-            desc = _normalize_description(record.get("descrizione"))
-            is_duplicate = any(
-                desc in _normalize_description(k.get("descrizione"))
-                for k in kept
-            )
+            desc = _dedup_text(record)
+            is_duplicate = any(desc in _dedup_text(k) for k in kept)
             if not is_duplicate:
                 kept.append(record)
         deduped.extend(kept)
