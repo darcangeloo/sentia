@@ -203,6 +203,46 @@ def _deduplicate(raw_records: list[dict]) -> list[dict]:
     return deduped
 
 
+# Una riga di movimento ha sempre una data e un importo. Intestazioni, dati
+# anagrafici, note legali e piè di pagina no: sono la maggior parte del testo
+# di un documento e non possono contenere un record da estrarre.
+_DATE_RE = re.compile(r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b|\b\d{4}-\d{1,2}-\d{1,2}\b")
+_AMOUNT_RE = re.compile(r"\d{1,3}(?:[.\s]\d{3})*,\d{2}\b|\b\d+\.\d{2}\b")
+
+
+def prefilter_chunks(rows: list, search_terms: list[str]) -> list:
+    """Scarta i chunk che non possono contenere record, prima del map.
+
+    Il retrieval esaustivo recupera i documenti *interi* — necessario perché
+    le righe di movimento spesso non ripetono il nome del soggetto (vedi il
+    caso dell'intestatario del conto). Ma mandarli interi all'LLM significa
+    pagare token per copertine, IBAN e note legali.
+
+    Si tiene un chunk se cita il soggetto (potrebbe essere una riga di
+    movimento espressa in modo inatteso) oppure se contiene sia una data sia
+    un importo. Se il filtro non tiene nulla — tipico delle domande non
+    contabili, es. "elenca tutte le clausole" — si torna a passare tutto:
+    risparmiare token non vale il rischio di svuotare la risposta.
+    """
+    terms = [t.casefold() for t in search_terms if t]
+    kept = []
+
+    for row in rows:
+        text = row["text"]
+        lowered = text.casefold()
+        if any(term in lowered for term in terms):
+            kept.append(row)
+        elif _DATE_RE.search(text) and _AMOUNT_RE.search(text):
+            kept.append(row)
+
+    if not kept:
+        logger.info("Prefiltro: nessun chunk con data+importo, passo tutti i chunk all'estrazione")
+        return rows
+
+    logger.info(f"Prefiltro: {len(kept)}/{len(rows)} chunk inviati all'estrazione")
+    return kept
+
+
 def _format_batch(rows: list) -> str:
     """Prepara i frammenti di un batch per il prompt."""
     parts = []
@@ -271,6 +311,7 @@ async def extract_records(
     """
     batch_size = settings.EXTRACTION_BATCH_SIZE
     batches = [rows[i:i + batch_size] for i in range(0, len(rows), batch_size)]
+    logger.info(f"Estrazione: {len(rows)} chunk in {len(batches)} batch")
 
     date_filter = ""
     if date_from or date_to:
@@ -321,6 +362,50 @@ def _format_amount(value: Decimal) -> str:
     quantized = value.quantize(Decimal("0.01"))
     formatted = f"{abs(quantized):,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
     return f"-{formatted}" if quantized < 0 else formatted
+
+
+# Somme esplicite del tipo "€ 10,00 + € 5,50 = € 15,50" prodotte dall'LLM
+# quando gli si chiede di mostrare gli addendi.
+_SUM_RE = re.compile(
+    r"(?:€\s*)?\d{1,3}(?:\.\d{3})*,\d{2}"
+    r"(?:\s*\+\s*(?:€\s*)?\d{1,3}(?:\.\d{3})*,\d{2})+"
+    r"\s*=\s*\*{0,2}\s*(?:€\s*)?(\d{1,3}(?:\.\d{3})*,\d{2})"
+)
+
+
+def verify_arithmetic(answer: str) -> str:
+    """Ricontrolla in Python le somme che il modello mostra nella risposta.
+
+    Gli LLM sbagliano l'aritmetica in modo silenzioso e plausibile: su un
+    estratto conto una cifra sbagliata in un totale è indistinguibile da una
+    giusta. Chiedere al modello di esplicitare gli addendi (vedi SYSTEM_PROMPT)
+    serve proprio a rendere la somma ricalcolabile qui.
+
+    Non si riscrive la risposta — correggere il testo generato rischia di
+    rompere il ragionamento intorno — ma si segnala la discrepanza, così
+    l'errore smette di essere invisibile.
+    """
+    corrections = []
+
+    for match in _SUM_RE.finditer(answer):
+        amounts = re.findall(r"\d{1,3}(?:\.\d{3})*,\d{2}", match.group())
+        if len(amounts) < 3:
+            continue
+        *addends, stated = amounts
+        computed = sum((_parse_amount(a) or Decimal(0)) for a in addends)
+        declared = _parse_amount(stated)
+        if declared is not None and abs(computed - declared) >= Decimal("0.01"):
+            corrections.append(
+                f"la somma dichiarata {stated} non torna: "
+                f"{len(addends)} importi danno {_format_amount(computed)}"
+            )
+
+    if not corrections:
+        return answer
+
+    logger.warning(f"Verifica aritmetica: {len(corrections)} somme errate nella risposta")
+    avviso = "\n\n⚠️ **Controllo aritmetico**: " + "; ".join(corrections) + "."
+    return answer + avviso
 
 
 def _pluralize(word: str) -> str:

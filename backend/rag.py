@@ -10,7 +10,7 @@ from backend.llm import generate_answer_async, generate_answer_stream_async
 from backend.database import AsyncSessionLocal, ChatMessage
 from backend.config import get_settings
 from backend.query_router import analyze_query
-from backend.extraction import extract_records, render_answer
+from backend.extraction import extract_records, prefilter_chunks, render_answer, verify_arithmetic
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 logger = logging.getLogger(__name__)
@@ -601,6 +601,7 @@ async def _retrieve_hybrid(
     user_query: str,
     db: AsyncSession,
     search_terms: list[str] | None = None,
+    max_chunks: int | None = None,
 ):
     """Esegue la ricerca ibrida (vettoriale + full-text + entità).
 
@@ -611,6 +612,8 @@ async def _retrieve_hybrid(
             router ne ha identificati. Pesano il doppio nella fusione RRF:
             se l'utente nomina un soggetto, i chunk che lo citano sono
             quasi sempre quelli giusti.
+        max_chunks: Sovrascrive il budget di chunk, usato dal percorso
+            'broad' per le domande di sintesi.
     """
     query_vector = await get_embedding_async(user_query)
     terms = search_terms or []
@@ -625,7 +628,7 @@ async def _retrieve_hybrid(
         "like_patterns": _like_patterns(terms),
         "candidate_pool": CANDIDATE_POOL_SIZE,
         "rrf_k": RRF_K,
-        "max_chunks": settings.MAX_CHUNKS_PER_QUERY,
+        "max_chunks": max_chunks or settings.MAX_CHUNKS_PER_QUERY,
     })
     return result.fetchall()
 
@@ -678,8 +681,12 @@ async def _retrieve_exhaustive(tenant: dict, search_terms: list[str], db: AsyncS
     return rows, truncated
 
 
-def _build_context_and_sources(rows):
+def _build_context_and_sources(rows, keep_all: bool = False):
     """Filtra per soglia di rilevanza e costruisce contesto + fonti da mostrare in UI.
+
+    Con keep_all il filtro è disattivato: nelle domande di sintesi ogni chunk
+    recuperato può contribuire al totale, e scartarne uno perché "meno simile
+    alla domanda" produrrebbe un risultato parziale spacciato per completo.
 
     Il filtro si applica al similarity_score (cosine), non al rrf_score — il
     rrf_score serve solo per l'ordinamento interno, il similarity_score resta
@@ -693,8 +700,11 @@ def _build_context_and_sources(rows):
     context_segments = []
     sources = []
 
-    scores = [row[5] for row in rows if row[5] is not None]
-    cutoff = max(settings.SIMILARITY_THRESHOLD, max(scores) * 0.6) if scores else 0.0
+    if keep_all:
+        cutoff = 0.0
+    else:
+        scores = [row[5] for row in rows if row[5] is not None]
+        cutoff = max(settings.SIMILARITY_THRESHOLD, max(scores) * 0.6) if scores else 0.0
 
     for row in rows:
         text, page_number, chunk_index, filename, rrf_score, score = row
@@ -772,6 +782,9 @@ async def _run_exhaustive_pipeline(
         {"text": r.text, "page_number": r.page_number, "filename": r.filename}
         for r in rows
     ]
+    # I documenti arrivano interi: prima di pagarne i token, si scartano i
+    # chunk che non possono contenere record (copertine, note, intestazioni).
+    chunk_dicts = prefilter_chunks(chunk_dicts, analysis["search_terms"])
     subject = analysis["search_terms"][0]
 
     extraction = await extract_records(
@@ -797,7 +810,7 @@ async def _run_exhaustive_pipeline(
         extraction=extraction,
         subject=subject,
         record_type=analysis["record_type"],
-        chunks_analyzed=len(rows),
+        chunks_analyzed=len(chunk_dicts),
         documents_count=len(matched),
         truncated=truncated,
     )
@@ -822,7 +835,11 @@ async def run_rag_pipeline(tenant: dict, user_query: str, db: AsyncSession) -> d
         answer, sources, _ = await _run_exhaustive_pipeline(tenant, user_query, analysis, db)
         return {"answer": answer, "sources": sources}
 
-    rows = await _retrieve_hybrid(tenant, user_query, db, analysis["search_terms"])
+    broad = analysis["intent"] == "broad"
+    rows = await _retrieve_hybrid(
+        tenant, user_query, db, analysis["search_terms"],
+        max_chunks=settings.BROAD_MAX_CHUNKS if broad else None,
+    )
     history = await get_recent_messages(db, tenant.get("chat_id"), limit=6)
 
     if not rows:
@@ -831,8 +848,8 @@ async def run_rag_pipeline(tenant: dict, user_query: str, db: AsyncSession) -> d
             "sources": []
         }
 
-    context, sources = _build_context_and_sources(rows)
-    answer = await generate_answer_async(user_query, context, history,tenant, db)
+    context, sources = _build_context_and_sources(rows, keep_all=broad)
+    answer = verify_arithmetic(await generate_answer_async(user_query, context, history, tenant, db))
 
     logger.info(
         f"RAG pipeline completato: {len(sources)} fonti, "
@@ -869,7 +886,11 @@ async def run_rag_pipeline_stream(tenant: dict, user_query: str, db: AsyncSessio
             yield {"type": "done"}
             return
 
-        rows = await _retrieve_hybrid(tenant, user_query, db, analysis["search_terms"])
+        broad = analysis["intent"] == "broad"
+        rows = await _retrieve_hybrid(
+            tenant, user_query, db, analysis["search_terms"],
+            max_chunks=settings.BROAD_MAX_CHUNKS if broad else None,
+        )
 
         if not rows:
             yield {"type": "sources", "data": []}
@@ -877,14 +898,24 @@ async def run_rag_pipeline_stream(tenant: dict, user_query: str, db: AsyncSessio
             yield {"type": "done"}
             return
 
-        context, sources = _build_context_and_sources(rows)
+        context, sources = _build_context_and_sources(rows, keep_all=broad)
 
         yield {"type": "sources", "data": sources}
 
         history = await get_recent_messages(db, tenant.get("chat_id"), limit=6)
 
+        emitted = []
         async for token in generate_answer_stream_async(user_query, context, history=history, tenant=tenant, db=db):
+            emitted.append(token)
             yield {"type": "token", "data": token}
+
+        # Il controllo aritmetico ha bisogno della risposta intera, che in
+        # streaming esiste solo ora: l'eventuale avviso viene accodato come
+        # ultimo token, così finisce anche nella versione salvata in cronologia.
+        full = "".join(emitted)
+        checked = verify_arithmetic(full)
+        if checked != full:
+            yield {"type": "token", "data": checked[len(full):]}
 
         yield {"type": "done"}
 

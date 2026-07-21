@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     EXTRACTION_BATCH_SIZE: int = 15
     EXTRACTION_CONCURRENCY: int = 4
 
+    # Domande di sintesi senza un soggetto su cui filtrare ("quanto ho speso
+    # a gennaio?", "riepilogami le spese"): non c'è entità da estrarre, ma
+    # rispondere sui soli chunk più simili alla domanda porta a totali
+    # calcolati su dati parziali. Si allarga il contesto.
+    BROAD_MAX_CHUNKS: int = 60
+
     # === Upload ===
     MAX_UPLOAD_SIZE_MB: int = 25
 

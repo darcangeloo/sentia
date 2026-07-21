@@ -181,11 +181,19 @@ async def analyze_query(
     search_terms = _clean_terms(search_terms)  # dedup fra entities e aliases
 
     if not search_terms:
-        # Domanda esaustiva ma senza un soggetto su cui filtrare
-        # (es. "elencami tutte le policy"): il retrieval per entità non ha
-        # nulla da filtrare, meglio il percorso standard.
-        logger.info("Router: query esaustiva senza entità identificabili, uso il percorso lookup")
-        return fallback
+        # Domanda di sintesi senza un soggetto su cui filtrare ("quanto ho
+        # speso a gennaio?", "elencami tutte le clausole"). Il retrieval per
+        # entità non ha nulla da filtrare, ma nemmeno il top-k stretto va
+        # bene: un totale calcolato su una parte dei movimenti è sbagliato e
+        # sembra giusto. Si usa il percorso standard con contesto allargato.
+        logger.info("Router: intent=broad (query di sintesi senza entità identificabili)")
+        return {
+            "intent": "broad",
+            "search_terms": [],
+            "record_type": parsed.get("record_type"),
+            "date_from": parsed.get("date_from"),
+            "date_to": parsed.get("date_to"),
+        }
 
     result = {
         "intent": "exhaustive",
