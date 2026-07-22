@@ -1111,6 +1111,21 @@ async def outlook_callback(
         if mailbox_changed:
             account.delta_link = None
             account.initial_import_done = False
+            # Mailbox diversa: le email della casella precedente non vanno
+            # lasciate nell'indice (resterebbero per sempre: la deduplica per
+            # source_ref non le tocca e il delta della nuova casella nemmeno).
+            await db.execute(
+                sqlalchemy_text("""
+                    DELETE FROM chunks WHERE document_id IN (
+                        SELECT id FROM documents WHERE company_id = :company_id AND source = 'email'
+                    )
+                """),
+                {"company_id": str(company_uuid)},
+            )
+            await db.execute(
+                sqlalchemy_text("DELETE FROM documents WHERE company_id = :company_id AND source = 'email'"),
+                {"company_id": str(company_uuid)},
+            )
     else:
         account = EmailAccount(
             id=uuid.uuid4(),
@@ -1150,9 +1165,12 @@ async def outlook_status(tenant: dict = Depends(get_current_tenant), db: AsyncSe
     if not account:
         return {"configured": settings.outlook_enabled, "connected": False}
 
+    # Solo le email indicizzate con successo: quelle in errore o ancora in
+    # lavorazione non vanno mostrate come disponibili all'assistente.
     count_result = await db.execute(
         sqlalchemy_text(
-            "SELECT COUNT(*) FROM documents WHERE company_id = :company_id AND source = 'email'"
+            "SELECT COUNT(*) FROM documents "
+            "WHERE company_id = :company_id AND source = 'email' AND status = 'ready'"
         ),
         {"company_id": str(company_uuid)},
     )
@@ -1196,14 +1214,16 @@ async def outlook_sync_now(
 
 @app.delete("/v1/integrations/outlook")
 async def outlook_disconnect(
-    purge: bool = False,
+    purge: bool = True,
     tenant: dict = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
 ):
     """Disconnette Outlook: elimina i token salvati e ferma il sync.
 
-    Con purge=true rimuove anche le email già indicizzate (documenti
-    source='email' e relativi chunk) dell'azienda.
+    Di default (purge=true) rimuove anche le email già indicizzate
+    (documenti source='email' e relativi chunk): disconnettere significa
+    togliere i dati della casella dall'assistente. Con purge=false i
+    contenuti indicizzati restano consultabili.
     """
     company_uuid = uuid.UUID(tenant["company_id"])
     result = await db.execute(select(EmailAccount).filter(EmailAccount.company_id == company_uuid))

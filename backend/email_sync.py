@@ -207,14 +207,25 @@ async def _index_message(db: AsyncSession, account: EmailAccount, access_token: 
     if not message_id:
         return False
 
-    existing = await db.execute(
-        select(Document.id).filter(
+    existing_result = await db.execute(
+        select(Document).filter(
             Document.company_id == account.company_id,
             Document.source_ref == message_id,
         )
     )
-    if existing.first():
-        return False
+    existing_doc = existing_result.scalars().first()
+    if existing_doc:
+        if existing_doc.status != "error":
+            return False
+        # Import precedente fallito (es. errore transitorio dell'API di
+        # embedding): si rimuove il record e si riprova da capo, altrimenti
+        # la deduplica bloccherebbe il messaggio per sempre.
+        await db.execute(
+            sqlalchemy_text("DELETE FROM chunks WHERE document_id = :doc_id"),
+            {"doc_id": str(existing_doc.id)},
+        )
+        await db.delete(existing_doc)
+        await db.commit()
 
     subject = (message.get("subject") or "").strip() or "(senza oggetto)"
 
