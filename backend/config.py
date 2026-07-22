@@ -128,8 +128,10 @@ class Settings(BaseSettings):
     # Dove atterra il browser dopo il callback OAuth (con ?outlook=<esito>).
     # Relativo = stesso host del backend; assoluto se il frontend vive altrove.
     OUTLOOK_POST_AUTH_REDIRECT: str = "/app/"
-    # Scope Graph delegati: lettura mail + refresh token.
-    OUTLOOK_SCOPES: str = "offline_access https://graph.microsoft.com/Mail.Read"
+    # Scope Graph delegati: profilo (per /me, da cui l'indirizzo email),
+    # lettura mail e refresh token. Senza User.Read la chiamata /me risponde
+    # 401 anche con un token valido.
+    OUTLOOK_SCOPES: str = "offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.Read"
     # Polling periodico del sync incrementale (delta query). Niente webhook.
     OUTLOOK_SYNC_INTERVAL_MINUTES: int = 15
     # Tetto sull'import iniziale dello storico: le mailbox possono contenere
