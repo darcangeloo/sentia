@@ -51,6 +51,15 @@ class Document(Base):
     filename = Column(String(500))
     storage_path = Column(TEXT)
     status = Column(String(20), default="processing")  # processing, ready, error
+    # Provenienza del documento: 'upload' (PDF caricato) o 'email' (messaggio
+    # importato da Outlook). I documenti email non compaiono nell'archivio
+    # PDF del frontend ma i loro chunk partecipano al retrieval come gli altri.
+    source = Column(String(20), default="upload")
+    # Identificatore esterno del contenuto: per le email è l'id immutabile del
+    # messaggio Graph. Con l'indice unico (company_id, source_ref) impedisce
+    # di reimportare due volte lo stesso messaggio (delta + import iniziale
+    # possono sovrapporsi).
+    source_ref = Column(String(512), nullable=True)
     error_message = Column(TEXT, nullable=True)
     page_count = Column(Integer, nullable=True)
     chunk_count = Column(Integer, nullable=True, default=0)
@@ -159,6 +168,41 @@ class UserLLMSetting(Base):
     )
 
 
+class EmailAccount(Base):
+    """Account Outlook collegato da un'azienda per l'import email.
+
+    I token OAuth sono cifrati con Fernet (stessa MASTER_KEY delle API key
+    LLM). Una sola mailbox per azienda: l'indice unico su company_id rende
+    l'upsert del callback OAuth privo di race condition.
+    """
+    __tablename__ = "email_accounts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    provider = Column(String(20), nullable=False, default="outlook")
+    email_address = Column(String(255), nullable=False)
+    encrypted_access_token = Column(LargeBinary, nullable=False)
+    encrypted_refresh_token = Column(LargeBinary, nullable=False)
+    token_expires_at = Column(TIMESTAMP, nullable=True)
+    # deltaLink dell'ultima delta query completata: il sync incrementale
+    # riparte da qui e riceve solo i messaggi nuovi/modificati.
+    delta_link = Column(TEXT, nullable=True)
+    # connected | syncing | error | disconnected
+    # 'disconnected' = refresh token revocato/scaduto: serve un nuovo consenso.
+    status = Column(String(20), default="connected")
+    error_message = Column(TEXT, nullable=True)
+    last_sync_at = Column(TIMESTAMP, nullable=True)
+    # True finché l'import dello storico non è completato.
+    initial_import_done = Column(Boolean, default=False)
+    created_at = Column(TIMESTAMP, server_default="NOW()")
+    updated_at = Column(TIMESTAMP, server_default="NOW()")
+
+    __table_args__ = (
+        Index("idx_email_accounts_company_id", "company_id", unique=True),
+    )
+
+
 async def verify_and_migrate_db():
     """Verifica lo stato del database e applica le migrazioni per le nuove tabelle/colonne."""
     logger.info("Verifica e migrazione database in corso...")
@@ -214,6 +258,46 @@ async def verify_and_migrate_db():
         await conn.execute(sqlalchemy_text("""
             ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64)
         """))
+
+        # source / source_ref su documents: distinguono i PDF caricati dalle
+        # email importate da Outlook (vedi backend/email_sync.py).
+        await conn.execute(sqlalchemy_text("""
+            ALTER TABLE documents ADD COLUMN IF NOT EXISTS source VARCHAR(20) DEFAULT 'upload'
+        """))
+        await conn.execute(sqlalchemy_text("""
+            ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_ref VARCHAR(512)
+        """))
+        # Unico parziale: lo stesso messaggio Graph non può essere importato
+        # due volte per la stessa azienda (import iniziale e delta possono
+        # sovrapporsi).
+        await conn.execute(sqlalchemy_text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_company_source_ref
+            ON documents(company_id, source_ref) WHERE source_ref IS NOT NULL
+        """))
+
+        # Tabella email_accounts per l'integrazione Outlook
+        await conn.execute(sqlalchemy_text("""
+            CREATE TABLE IF NOT EXISTS email_accounts (
+                id UUID PRIMARY KEY,
+                company_id UUID REFERENCES companies(id) ON DELETE CASCADE NOT NULL,
+                user_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
+                provider VARCHAR(20) NOT NULL DEFAULT 'outlook',
+                email_address VARCHAR(255) NOT NULL,
+                encrypted_access_token BYTEA NOT NULL,
+                encrypted_refresh_token BYTEA NOT NULL,
+                token_expires_at TIMESTAMP,
+                delta_link TEXT,
+                status VARCHAR(20) DEFAULT 'connected',
+                error_message TEXT,
+                last_sync_at TIMESTAMP,
+                initial_import_done BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """))
+        await conn.execute(sqlalchemy_text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_email_accounts_company_id ON email_accounts(company_id)"
+        ))
 
         # Crea gli indici se non esistono
         await conn.execute(sqlalchemy_text("CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id)"))

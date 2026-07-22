@@ -9,20 +9,21 @@ import logging
 import aiofiles
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi import FastAPI, Depends, Request, UploadFile, File, HTTPException, status, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, FileResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, FileResponse, RedirectResponse
+from jose import jwt as jose_jwt, JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import text as sqlalchemy_text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from pydantic import BaseModel, Field
-from backend.database import AsyncSessionLocal, Company, User, Document, ChatMessage, Conversation, UserLLMSetting
+from backend.database import AsyncSessionLocal, Company, User, Document, ChatMessage, Conversation, UserLLMSetting, EmailAccount
 from backend.auth import create_access_token, verify_password, get_current_tenant
 from backend.rag import process_pdf_and_chunk, run_rag_pipeline, run_rag_pipeline_stream
 from backend.config import get_settings
@@ -40,11 +41,30 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Ciclo di vita dell'app: migrazione DB all'avvio, chiusura pulita del
-    connection pool allo spegnimento (graceful shutdown)."""
+    """Ciclo di vita dell'app: migrazione DB all'avvio, avvio del poller di
+    sync email (se configurato), chiusura pulita del connection pool allo
+    spegnimento (graceful shutdown)."""
     from backend.database import verify_and_migrate_db, engine
     await verify_and_migrate_db()
+
+    # Sync incrementale Outlook via polling periodico (niente webhook).
+    # Parte solo se le credenziali Microsoft sono configurate nel .env.
+    outlook_sync_task = None
+    if settings.outlook_enabled:
+        from backend.email_sync import periodic_sync_loop
+        outlook_sync_task = asyncio.create_task(periodic_sync_loop())
+        logger.info(
+            f"Poller sync Outlook avviato (ogni {settings.OUTLOOK_SYNC_INTERVAL_MINUTES} minuti)"
+        )
+
     yield
+
+    if outlook_sync_task:
+        outlook_sync_task.cancel()
+        try:
+            await outlook_sync_task
+        except asyncio.CancelledError:
+            pass
     await engine.dispose()
 
 
@@ -370,10 +390,19 @@ async def document_upload(
 
 @app.get("/v1/documents")
 async def get_documents(tenant: dict = Depends(get_current_tenant), db: AsyncSession = Depends(get_db)):
-    """Lista tutti i documenti dell'azienda del tenant corrente."""
+    """Lista i documenti caricati dell'azienda del tenant corrente.
+
+    Le email importate da Outlook (source='email') restano fuori: sono
+    centinaia/migliaia di record e affollerebbero l'archivio PDF. I loro
+    chunk partecipano comunque al retrieval; lo stato dell'integrazione si
+    legge da /v1/integrations/outlook/status.
+    """
     result = await db.execute(
         select(Document)
-        .filter(Document.company_id == uuid.UUID(tenant["company_id"]))
+        .filter(
+            Document.company_id == uuid.UUID(tenant["company_id"]),
+            (Document.source == None) | (Document.source != "email"),  # noqa: E711
+        )
         .order_by(Document.created_at.desc())
     )
     docs = result.scalars().all()
@@ -964,6 +993,244 @@ async def save_llm_settings(
 
     logger.info(f"LLM settings salvate/attivate per {provider} (utente {tenant['user_id']})")
     return {"status": "success"}
+
+# --- Integrazione Email Outlook (Microsoft Graph) ---
+_OUTLOOK_STATE_PURPOSE = "outlook_oauth"
+
+
+def _require_outlook_configured():
+    if not settings.outlook_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="Integrazione Outlook non configurata sul server (MS_CLIENT_ID/MS_CLIENT_SECRET mancanti)."
+        )
+
+
+@app.get("/v1/integrations/outlook/authorize")
+async def outlook_authorize(tenant: dict = Depends(get_current_tenant)):
+    """Costruisce l'URL di autorizzazione Microsoft per il tenant corrente.
+
+    Il frontend riceve l'URL e vi naviga: la redirect del browser non può
+    portare l'header Authorization, quindi company_id/user_id viaggiano nello
+    `state` come JWT firmato a breve scadenza — che fa anche da anti-CSRF
+    (uno state non firmato da noi non supera il callback).
+    """
+    _require_outlook_configured()
+    from backend import outlook
+
+    state = jose_jwt.encode(
+        {
+            "company_id": tenant["company_id"],
+            "user_id": tenant["user_id"],
+            "purpose": _OUTLOOK_STATE_PURPOSE,
+            "nonce": str(uuid.uuid4()),
+            "exp": datetime.now().timestamp() + settings.OUTLOOK_OAUTH_STATE_TTL_MINUTES * 60,
+        },
+        settings.JWT_SECRET_KEY,
+        algorithm="HS256",
+    )
+    return {"url": outlook.build_authorize_url(state)}
+
+
+@app.get("/api/auth/outlook/callback")
+async def outlook_callback(
+    background_tasks: BackgroundTasks,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    error_description: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Callback OAuth di Microsoft: scambia il code, salva i token cifrati.
+
+    Endpoint non autenticato (è una redirect del browser): il tenant viene
+    ricostruito e verificato dallo `state` firmato emesso da /authorize.
+    Al termine redirige al frontend con l'esito in query string.
+    """
+    _require_outlook_configured()
+    from backend import outlook
+    from backend.crypto import encrypt_key
+    from backend.email_sync import sync_account, _utcnow_naive
+
+    def _redirect(outcome: str) -> RedirectResponse:
+        base = settings.OUTLOOK_POST_AUTH_REDIRECT
+        separator = "&" if "?" in base else "?"
+        return RedirectResponse(url=f"{base}{separator}outlook={outcome}", status_code=302)
+
+    if error:
+        logger.warning(f"Callback Outlook con errore: {error} — {error_description}")
+        return _redirect("denied" if error == "access_denied" else "error")
+
+    if not code or not state:
+        return _redirect("error")
+
+    # Validazione anti-CSRF dello state: firma, scadenza e purpose.
+    try:
+        payload = jose_jwt.decode(state, settings.JWT_SECRET_KEY, algorithms=["HS256"])
+        if payload.get("purpose") != _OUTLOOK_STATE_PURPOSE:
+            raise JWTError("purpose errato")
+        company_uuid = uuid.UUID(payload["company_id"])
+        user_uuid = uuid.UUID(payload["user_id"])
+    except (JWTError, KeyError, ValueError):
+        logger.warning("Callback Outlook con state non valido o scaduto")
+        return _redirect("error")
+
+    try:
+        tokens = await outlook.exchange_code_for_tokens(code)
+        profile = await outlook.get_me(tokens["access_token"])
+    except outlook.OutlookError as e:
+        logger.error(f"Scambio code Outlook fallito: {e}")
+        return _redirect("error")
+
+    email_address = (profile.get("mail") or profile.get("userPrincipalName") or "")[:255]
+    if not tokens.get("refresh_token"):
+        # Senza refresh token il sync si fermerebbe alla prima scadenza:
+        # succede se manca lo scope offline_access nel consenso.
+        logger.error("Token Microsoft senza refresh_token: scope offline_access mancante?")
+        return _redirect("error")
+
+    now = _utcnow_naive()
+    expires_at = now + timedelta(seconds=int(tokens.get("expires_in", 3600)))
+
+    # Una mailbox per azienda (indice unico su company_id): se esiste già
+    # un account lo si aggiorna; se la mailbox è diversa si riparte da zero
+    # con delta e import iniziale.
+    result = await db.execute(select(EmailAccount).filter(EmailAccount.company_id == company_uuid))
+    account = result.scalars().first()
+
+    if account:
+        mailbox_changed = account.email_address != email_address
+        account.user_id = user_uuid
+        account.email_address = email_address
+        account.encrypted_access_token = encrypt_key(tokens["access_token"])
+        account.encrypted_refresh_token = encrypt_key(tokens["refresh_token"])
+        account.token_expires_at = expires_at
+        account.status = "connected"
+        account.error_message = None
+        account.updated_at = now
+        if mailbox_changed:
+            account.delta_link = None
+            account.initial_import_done = False
+    else:
+        account = EmailAccount(
+            id=uuid.uuid4(),
+            company_id=company_uuid,
+            user_id=user_uuid,
+            provider="outlook",
+            email_address=email_address,
+            encrypted_access_token=encrypt_key(tokens["access_token"]),
+            encrypted_refresh_token=encrypt_key(tokens["refresh_token"]),
+            token_expires_at=expires_at,
+            status="connected",
+        )
+        db.add(account)
+
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Doppio callback concorrente per la stessa azienda: l'altro ha vinto.
+        await db.rollback()
+        return _redirect("connected")
+
+    # Import iniziale dello storico in background (stesso pattern dei PDF:
+    # il task crea la propria sessione DB).
+    background_tasks.add_task(sync_account, str(account.id))
+
+    logger.info(f"Outlook collegato per l'azienda {company_uuid}: {email_address}")
+    return _redirect("connected")
+
+
+@app.get("/v1/integrations/outlook/status")
+async def outlook_status(tenant: dict = Depends(get_current_tenant), db: AsyncSession = Depends(get_db)):
+    """Stato dell'integrazione Outlook per il frontend (sezione Impostazioni)."""
+    company_uuid = uuid.UUID(tenant["company_id"])
+    result = await db.execute(select(EmailAccount).filter(EmailAccount.company_id == company_uuid))
+    account = result.scalars().first()
+
+    if not account:
+        return {"configured": settings.outlook_enabled, "connected": False}
+
+    count_result = await db.execute(
+        sqlalchemy_text(
+            "SELECT COUNT(*) FROM documents WHERE company_id = :company_id AND source = 'email'"
+        ),
+        {"company_id": str(company_uuid)},
+    )
+    email_count = count_result.scalar() or 0
+
+    return {
+        "configured": settings.outlook_enabled,
+        "connected": account.status != "disconnected",
+        "status": account.status,
+        "email_address": account.email_address,
+        "last_sync_at": account.last_sync_at.isoformat() if account.last_sync_at else None,
+        "initial_import_done": account.initial_import_done,
+        "error_message": account.error_message,
+        "email_count": email_count,
+    }
+
+
+@app.post("/v1/integrations/outlook/sync")
+async def outlook_sync_now(
+    background_tasks: BackgroundTasks,
+    tenant: dict = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Avvia manualmente un sync (in background), senza aspettare il poller."""
+    _require_outlook_configured()
+    from backend.email_sync import sync_account
+
+    company_uuid = uuid.UUID(tenant["company_id"])
+    result = await db.execute(select(EmailAccount).filter(EmailAccount.company_id == company_uuid))
+    account = result.scalars().first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Nessun account Outlook collegato")
+    if account.status == "disconnected":
+        raise HTTPException(status_code=409, detail="Account disconnesso: ricollega Outlook per riprendere il sync")
+    if account.status == "syncing":
+        return {"status": "already_syncing", "message": "Sincronizzazione già in corso."}
+
+    background_tasks.add_task(sync_account, str(account.id))
+    return {"status": "success", "message": "Sincronizzazione avviata."}
+
+
+@app.delete("/v1/integrations/outlook")
+async def outlook_disconnect(
+    purge: bool = False,
+    tenant: dict = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Disconnette Outlook: elimina i token salvati e ferma il sync.
+
+    Con purge=true rimuove anche le email già indicizzate (documenti
+    source='email' e relativi chunk) dell'azienda.
+    """
+    company_uuid = uuid.UUID(tenant["company_id"])
+    result = await db.execute(select(EmailAccount).filter(EmailAccount.company_id == company_uuid))
+    account = result.scalars().first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Nessun account Outlook collegato")
+
+    await db.delete(account)
+
+    if purge:
+        await db.execute(
+            sqlalchemy_text("""
+                DELETE FROM chunks WHERE document_id IN (
+                    SELECT id FROM documents WHERE company_id = :company_id AND source = 'email'
+                )
+            """),
+            {"company_id": str(company_uuid)},
+        )
+        await db.execute(
+            sqlalchemy_text("DELETE FROM documents WHERE company_id = :company_id AND source = 'email'"),
+            {"company_id": str(company_uuid)},
+        )
+
+    await db.commit()
+    logger.info(f"Outlook disconnesso per l'azienda {company_uuid} (purge={purge})")
+    return {"status": "success"}
+
 
 # --- Informazioni Profilo e Azienda ---
 @app.get("/v1/users/me")

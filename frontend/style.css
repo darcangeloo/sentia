@@ -1199,6 +1199,39 @@ select.form-input { cursor: pointer; appearance: none;
    PROVIDER
    ============================================================ */
 .settings-view-content { flex: 1; overflow-y: auto; padding: var(--sp-6); }
+
+/* Etichette di sezione della pagina Impostazioni (riusa .section-label) */
+.settings-section-label {
+  max-width: 1100px;
+  margin-bottom: var(--sp-3);
+}
+.settings-section-label + .provider-grid { margin-bottom: var(--sp-6); }
+
+/* --- Card integrazione email --- */
+.integration-desc {
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+  margin-bottom: var(--sp-3);
+}
+.integration-meta {
+  display: flex; flex-direction: column; gap: 6px;
+  margin-bottom: var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+.integration-meta > div {
+  display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-3);
+}
+.integration-meta-label {
+  font-size: var(--fs-xs);
+  color: var(--text-4);
+}
+.integration-error {
+  font-size: var(--fs-xs);
+  color: var(--danger);
+  margin-bottom: var(--sp-3);
+}
+
 .provider-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));

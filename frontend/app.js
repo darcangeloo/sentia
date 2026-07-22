@@ -9,7 +9,7 @@
  *   - STREAM        : stato dell'agente, fonti live, coda di rendering
  */
 
-const API_URL = 'https://sentia-i0aq.onrender.com';
+const API_URL = 'https://api.asksentia.com';
 
 // ============================================================
 // STATE
@@ -164,6 +164,18 @@ const dom = {
     geminiBaseUrl: $('#gemini-base-url'),
     geminiModel: $('#gemini-model'),
     geminiDeleteBtn: $('#gemini-delete-btn'),
+
+    outlookCard: $('#card-outlook'),
+    outlookStatusBadge: $('#outlook-status-badge'),
+    outlookDesc: $('#outlook-desc'),
+    outlookMeta: $('#outlook-meta'),
+    outlookEmail: $('#outlook-email'),
+    outlookLastSync: $('#outlook-last-sync'),
+    outlookCount: $('#outlook-count'),
+    outlookError: $('#outlook-error'),
+    btnConnectOutlook: $('#btn-connect-outlook'),
+    btnSyncOutlook: $('#btn-sync-outlook'),
+    btnDisconnectOutlook: $('#btn-disconnect-outlook'),
 };
 
 
@@ -238,6 +250,11 @@ function setupEventListeners() {
         btn.addEventListener('click', (e) => saveProviderSettings(e.currentTarget.dataset.provider)));
     $$('.btn-delete-provider').forEach(btn =>
         btn.addEventListener('click', (e) => deleteProviderSettings(e.currentTarget.dataset.provider)));
+
+    // Integrazione Outlook
+    dom.btnConnectOutlook.addEventListener('click', connectOutlook);
+    dom.btnSyncOutlook.addEventListener('click', syncOutlookNow);
+    dom.btnDisconnectOutlook.addEventListener('click', disconnectOutlook);
 }
 
 
@@ -333,7 +350,27 @@ function showApp() {
     loadDocuments();
     loadConversations();
     loadLLMSettings();
+    loadOutlookStatus();
     loadCompanyName();
+
+    // Ritorno dal flusso OAuth Outlook: il callback backend redirige qui
+    // con ?outlook=connected|denied|error. Toast + apertura Impostazioni,
+    // poi si pulisce la query string per non rimostrare il toast al reload.
+    const params = new URLSearchParams(window.location.search);
+    const outlookOutcome = params.get('outlook');
+    if (outlookOutcome) {
+        history.replaceState(null, '', window.location.pathname);
+        if (outlookOutcome === 'connected') {
+            showToast('Outlook collegato. Import delle email avviato in background.', 'success');
+        } else if (outlookOutcome === 'denied') {
+            showToast('Collegamento Outlook annullato.', 'info');
+        } else {
+            showToast('Collegamento Outlook non riuscito. Riprova.', 'error');
+        }
+        setView('settings');
+        return;
+    }
+
     setView('chat');
 }
 
@@ -1635,6 +1672,126 @@ async function deleteProviderSettings(provider) {
         await loadLLMSettings();
     } catch (err) {
         showToast('Eliminazione non riuscita.', 'error');
+    }
+}
+
+
+// ============================================================
+// INTEGRAZIONE OUTLOOK
+// ============================================================
+let outlookPollTimer = null;
+
+async function loadOutlookStatus() {
+    try {
+        const res = await apiFetch('/v1/integrations/outlook/status');
+        renderOutlookStatus(await res.json());
+    } catch (err) {
+        // Stato non caricato: la card resta su "Non connesso", la chat funziona.
+    }
+}
+
+function renderOutlookStatus(status) {
+    const badge = dom.outlookStatusBadge;
+
+    if (!status.connected) {
+        const disconnected = status.status === 'disconnected';
+        badge.textContent = disconnected ? 'Disconnesso' : 'Non connesso';
+        badge.className = 'provider-status-badge inactive';
+        dom.outlookCard.classList.remove('active');
+        dom.outlookDesc.classList.remove('hidden');
+        dom.outlookMeta.classList.add('hidden');
+        dom.btnConnectOutlook.textContent = disconnected ? 'Ricollega Outlook' : 'Collega Outlook';
+        dom.btnConnectOutlook.classList.remove('hidden');
+        dom.btnSyncOutlook.classList.add('hidden');
+        dom.btnDisconnectOutlook.classList.toggle('hidden', !disconnected);
+        // Un account disconnesso (token revocato/scaduto) mostra il perché.
+        const showError = disconnected && status.error_message;
+        dom.outlookError.classList.toggle('hidden', !showError);
+        if (showError) dom.outlookError.textContent = status.error_message;
+        stopOutlookPolling();
+        return;
+    }
+
+    const syncing = status.status === 'syncing';
+    const hasError = status.status === 'error';
+    badge.textContent = syncing ? 'Sincronizzazione…' : (hasError ? 'Errore sync' : 'Connesso');
+    badge.className = `provider-status-badge ${hasError ? 'inactive' : 'active'}`;
+    dom.outlookCard.classList.add('active');
+    dom.outlookDesc.classList.add('hidden');
+
+    dom.outlookMeta.classList.remove('hidden');
+    dom.outlookEmail.textContent = status.email_address || '—';
+    dom.outlookLastSync.textContent = status.last_sync_at
+        ? new Date(status.last_sync_at).toLocaleString('it-IT')
+        : (syncing ? 'in corso…' : 'mai');
+    dom.outlookCount.textContent = String(status.email_count ?? 0);
+
+    dom.outlookError.classList.toggle('hidden', !hasError);
+    if (hasError) dom.outlookError.textContent = status.error_message || 'Ultima sincronizzazione fallita.';
+
+    dom.btnConnectOutlook.classList.add('hidden');
+    dom.btnSyncOutlook.classList.remove('hidden');
+    dom.btnSyncOutlook.disabled = syncing;
+    dom.btnDisconnectOutlook.classList.remove('hidden');
+
+    // Durante l'import lo stato cambia da solo: si continua a leggere finché
+    // il sync non finisce, per aggiornare contatore e badge senza reload.
+    if (syncing) startOutlookPolling();
+    else stopOutlookPolling();
+}
+
+function startOutlookPolling() {
+    if (outlookPollTimer) return;
+    outlookPollTimer = setInterval(loadOutlookStatus, 10000);
+}
+
+function stopOutlookPolling() {
+    if (!outlookPollTimer) return;
+    clearInterval(outlookPollTimer);
+    outlookPollTimer = null;
+}
+
+async function connectOutlook() {
+    dom.btnConnectOutlook.disabled = true;
+    try {
+        const res = await apiFetch('/v1/integrations/outlook/authorize');
+        const data = await res.json();
+        // Redirect al consenso Microsoft: si torna sul callback backend,
+        // che a sua volta riporta qui con ?outlook=<esito>.
+        window.location.href = data.url;
+    } catch (err) {
+        showToast(`Collegamento non avviato: ${err.message}`, 'error');
+        dom.btnConnectOutlook.disabled = false;
+    }
+}
+
+async function syncOutlookNow() {
+    dom.btnSyncOutlook.disabled = true;
+    try {
+        await apiFetch('/v1/integrations/outlook/sync', { method: 'POST' });
+        showToast('Sincronizzazione avviata.', 'info');
+        await loadOutlookStatus();
+    } catch (err) {
+        showToast(`Sync non avviato: ${err.message}`, 'error');
+        dom.btnSyncOutlook.disabled = false;
+    }
+}
+
+async function disconnectOutlook() {
+    const ok = await confirmModal({
+        title: 'Disconnettere Outlook?',
+        message: 'I token di accesso salvati vengono eliminati e il sync si ferma. Le email già indicizzate restano consultabili in chat.',
+        confirmLabel: 'Disconnetti',
+        danger: true,
+    });
+    if (!ok) return;
+
+    try {
+        await apiFetch('/v1/integrations/outlook', { method: 'DELETE' });
+        showToast('Outlook disconnesso.', 'info');
+        await loadOutlookStatus();
+    } catch (err) {
+        showToast('Disconnessione non riuscita.', 'error');
     }
 }
 

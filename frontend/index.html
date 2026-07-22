@@ -200,8 +200,8 @@
                 <header class="chat-header">
                     <button class="mobile-menu-btn" title="Menu" aria-label="Apri menu"><span data-icon="menu"></span></button>
                     <div class="chat-header-info">
-                        <h2>Provider</h2>
-                        <p>Scegli il servizio che genera le risposte. La chiave resta cifrata sul server.</p>
+                        <h2>Impostazioni</h2>
+                        <p>Provider AI e integrazioni. Chiavi e token restano cifrati sul server.</p>
                     </div>
                     <div class="chat-header-actions">
                         <button id="btn-back-chat" class="btn-ghost btn-small">Torna alla chat</button>
@@ -209,6 +209,40 @@
                 </header>
 
                 <div class="settings-view-content">
+
+                    <!-- ---- Integrazioni email ---- -->
+                    <div class="section-label settings-section-label"><span>Integrazioni email</span></div>
+                    <div class="provider-grid">
+                        <div class="provider-card" id="card-outlook">
+                            <div class="provider-card-header">
+                                <div class="provider-info-header">
+                                    <span class="provider-badge-icon">OL</span>
+                                    <h3>Outlook</h3>
+                                </div>
+                                <span class="provider-status-badge inactive" id="outlook-status-badge">Non connesso</span>
+                            </div>
+                            <div class="provider-card-body">
+                                <p class="integration-desc" id="outlook-desc">
+                                    Collega la casella Outlook aziendale: le email vengono indicizzate
+                                    e diventano interrogabili in chat, come i documenti caricati.
+                                </p>
+                                <div class="integration-meta hidden" id="outlook-meta">
+                                    <div><span class="integration-meta-label">Email collegata</span><span id="outlook-email">—</span></div>
+                                    <div><span class="integration-meta-label">Ultimo sync</span><span id="outlook-last-sync">—</span></div>
+                                    <div><span class="integration-meta-label">Email indicizzate</span><span id="outlook-count">0</span></div>
+                                </div>
+                                <p class="integration-error hidden" id="outlook-error" role="alert"></p>
+                                <div class="provider-card-footer">
+                                    <button class="btn-primary btn-small" id="btn-connect-outlook">Collega Outlook</button>
+                                    <button class="btn-ghost btn-small hidden" id="btn-sync-outlook">Sincronizza ora</button>
+                                    <button class="btn-ghost btn-small hidden" id="btn-disconnect-outlook">Disconnetti</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ---- Provider ---- -->
+                    <div class="section-label settings-section-label"><span>Provider AI</span></div>
                     <div class="provider-grid">
 
                         <div class="provider-card" id="card-openai">

@@ -479,66 +479,10 @@ async def process_pdf_and_chunk(file_path: str, company_id: str, doc_id: str):
 
             logger.info(f"Generati {len(chunks_with_metadata)} chunks dal documento {doc_id}")
 
-            # === FASE 3: Embedding via Google Gemini Embedding API ===
-            # BATCH_SIZE qui limita la concorrenza lato nostro; il vero rate
-            # limiting verso Gemini è gestito dal semaforo dentro embeddings.py.
-            BATCH_SIZE = settings.EMBEDDING_BATCH_SIZE
-            all_texts = [c["text"] for c in chunks_with_metadata]
-            all_vectors = []
-            total_batches = (len(all_texts) - 1) // BATCH_SIZE + 1
+            # === FASE 3+4: Embedding e inserimento (helper condiviso) ===
+            if not await embed_and_store_chunks(db, doc_id, company_id, chunks_with_metadata):
+                return
 
-            for i in range(0, len(all_texts), BATCH_SIZE):
-                batch_num = i // BATCH_SIZE + 1
-
-                # Controllo cancellazione: se il documento è stato eliminato
-                # (es. dall'utente) mentre eravamo ancora in elaborazione, ci
-                # fermiamo subito invece di continuare a spendere chiamate
-                # embedding su un documento che non esiste più. Il controllo
-                # è per-batch (ogni BATCH_SIZE chunk) per non aggiungere una
-                # query DB per ogni singolo chunk.
-                if not await _document_still_exists(db, doc_id):
-                    logger.info(
-                        f"Documento {doc_id} cancellato durante l'elaborazione "
-                        f"(batch {batch_num}/{total_batches}), interrompo l'embedding"
-                    )
-                    return
-
-                batch = all_texts[i:i + BATCH_SIZE]
-                logger.info(f"Embedding batch {batch_num}/{total_batches} ({len(batch)} chunks)")
-
-                try:
-                    batch_vectors = await get_embeddings_batch_async(batch)
-                except Exception as embed_err:
-                    logger.error(
-                        f"❌ Embedding fallito per il documento {doc_id}, "
-                        f"batch {batch_num}/{total_batches} (chunks {i}-{i + len(batch) - 1}): {embed_err}",
-                        exc_info=True
-                    )
-                    raise
-
-                all_vectors.extend(batch_vectors)
-
-            # === FASE 4: Inserimento nel database (batch, singola round-trip) ===
-            # text_search è una colonna generata (vedi migration.sql):
-            # si popola automaticamente da `text`, non va passata qui.
-            insert_sql = sqlalchemy_text("""
-                INSERT INTO chunks (id, document_id, company_id, text, page_number, chunk_index, embedding)
-                VALUES (:id, :document_id, :company_id, :text, :page_number, :chunk_index, :embedding)
-            """)
-            chunk_rows = [
-                {
-                    "id": str(uuid.uuid4()),
-                    "document_id": doc_id,
-                    "company_id": company_id,
-                    "text": chunk_data["text"],
-                    "page_number": chunk_data["page_number"],
-                    "chunk_index": chunk_data["chunk_index"],
-                    "embedding": str(vector),
-                }
-                for chunk_data, vector in zip(chunks_with_metadata, all_vectors)
-            ]
-            await db.execute(insert_sql, chunk_rows)
-            await db.commit()
             await _update_document_status(db, doc_id, "ready", total_pages, len(chunks_with_metadata), error_message=None)
 
             logger.info(f"✅ Documento {doc_id} elaborato con successo: {len(chunks_with_metadata)} chunks indicizzati")
@@ -553,6 +497,84 @@ async def process_pdf_and_chunk(file_path: str, company_id: str, doc_id: str):
                     logger.info(f"Documento {doc_id} non più presente nel DB, salto l'aggiornamento di stato")
             except Exception:
                 logger.error(f"Impossibile aggiornare lo stato di errore per il documento {doc_id}", exc_info=True)
+
+
+async def embed_and_store_chunks(
+    db: AsyncSession,
+    doc_id: str,
+    company_id: str,
+    chunks_with_metadata: list[dict],
+) -> bool:
+    """Genera gli embedding dei chunk e li inserisce nel DB.
+
+    Condivisa fra l'indicizzazione PDF (process_pdf_and_chunk) e l'import
+    email (backend/email_sync.py): stessa tabella, stessa colonna generata
+    text_search, stesso isolamento per company_id.
+
+    Returns:
+        False se il documento è stato cancellato durante l'elaborazione
+        (l'inserimento viene abbandonato), True a lavoro completato.
+    """
+    # BATCH_SIZE qui limita la concorrenza lato nostro; il vero rate
+    # limiting verso Gemini è gestito dal semaforo dentro embeddings.py.
+    BATCH_SIZE = settings.EMBEDDING_BATCH_SIZE
+    all_texts = [c["text"] for c in chunks_with_metadata]
+    all_vectors = []
+    total_batches = (len(all_texts) - 1) // BATCH_SIZE + 1
+
+    for i in range(0, len(all_texts), BATCH_SIZE):
+        batch_num = i // BATCH_SIZE + 1
+
+        # Controllo cancellazione: se il documento è stato eliminato
+        # (es. dall'utente) mentre eravamo ancora in elaborazione, ci
+        # fermiamo subito invece di continuare a spendere chiamate
+        # embedding su un documento che non esiste più. Il controllo
+        # è per-batch (ogni BATCH_SIZE chunk) per non aggiungere una
+        # query DB per ogni singolo chunk.
+        if not await _document_still_exists(db, doc_id):
+            logger.info(
+                f"Documento {doc_id} cancellato durante l'elaborazione "
+                f"(batch {batch_num}/{total_batches}), interrompo l'embedding"
+            )
+            return False
+
+        batch = all_texts[i:i + BATCH_SIZE]
+        logger.info(f"Embedding batch {batch_num}/{total_batches} ({len(batch)} chunks)")
+
+        try:
+            batch_vectors = await get_embeddings_batch_async(batch)
+        except Exception as embed_err:
+            logger.error(
+                f"❌ Embedding fallito per il documento {doc_id}, "
+                f"batch {batch_num}/{total_batches} (chunks {i}-{i + len(batch) - 1}): {embed_err}",
+                exc_info=True
+            )
+            raise
+
+        all_vectors.extend(batch_vectors)
+
+    # Inserimento nel database (batch, singola round-trip).
+    # text_search è una colonna generata (vedi migration.sql):
+    # si popola automaticamente da `text`, non va passata qui.
+    insert_sql = sqlalchemy_text("""
+        INSERT INTO chunks (id, document_id, company_id, text, page_number, chunk_index, embedding)
+        VALUES (:id, :document_id, :company_id, :text, :page_number, :chunk_index, :embedding)
+    """)
+    chunk_rows = [
+        {
+            "id": str(uuid.uuid4()),
+            "document_id": doc_id,
+            "company_id": company_id,
+            "text": chunk_data["text"],
+            "page_number": chunk_data["page_number"],
+            "chunk_index": chunk_data["chunk_index"],
+            "embedding": str(vector),
+        }
+        for chunk_data, vector in zip(chunks_with_metadata, all_vectors)
+    ]
+    await db.execute(insert_sql, chunk_rows)
+    await db.commit()
+    return True
 
 
 async def _document_still_exists(db: AsyncSession, doc_id: str) -> bool:

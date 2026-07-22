@@ -117,6 +117,33 @@ class Settings(BaseSettings):
     def storage_remote_enabled(self) -> bool:
         return bool(self.SUPABASE_URL and self.SUPABASE_SERVICE_ROLE_KEY)
 
+    # === Integrazione email Outlook (Microsoft Graph) ===
+    # OAuth app registrata in Azure AD (multi-tenant). Se CLIENT_ID/SECRET
+    # mancano, l'integrazione è disattivata: gli endpoint rispondono 503 e
+    # il poller di sync non parte.
+    MS_CLIENT_ID: str = ""
+    MS_CLIENT_SECRET: str = ""
+    MS_TENANT: str = "common"
+    MS_REDIRECT_URI: str = "https://api.asksentia.com/api/auth/outlook/callback"
+    # Dove atterra il browser dopo il callback OAuth (con ?outlook=<esito>).
+    # Relativo = stesso host del backend; assoluto se il frontend vive altrove.
+    OUTLOOK_POST_AUTH_REDIRECT: str = "/app/"
+    # Scope Graph delegati: lettura mail + refresh token.
+    OUTLOOK_SCOPES: str = "offline_access https://graph.microsoft.com/Mail.Read"
+    # Polling periodico del sync incrementale (delta query). Niente webhook.
+    OUTLOOK_SYNC_INTERVAL_MINUTES: int = 15
+    # Tetto sull'import iniziale dello storico: le mailbox possono contenere
+    # decine di migliaia di messaggi, l'embedding ha un costo per chunk.
+    OUTLOOK_INITIAL_IMPORT_MAX_MESSAGES: int = 500
+    # Allegati oltre questa soglia non vengono scaricati né indicizzati.
+    OUTLOOK_MAX_ATTACHMENT_MB: int = 10
+    # Validità dello state firmato usato contro il CSRF nel flusso OAuth.
+    OUTLOOK_OAUTH_STATE_TTL_MINUTES: int = 10
+
+    @property
+    def outlook_enabled(self) -> bool:
+        return bool(self.MS_CLIENT_ID and self.MS_CLIENT_SECRET)
+
     # === Rate Limiting (login) ===
     LOGIN_RATE_LIMIT_ATTEMPTS: int = 5
     LOGIN_RATE_LIMIT_WINDOW_SECONDS: int = 300
