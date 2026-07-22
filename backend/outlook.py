@@ -136,8 +136,11 @@ async def get_me(access_token: str) -> dict:
 
 
 async def list_messages_page(access_token: str, url: str | None = None) -> dict:
-    """Una pagina di /me/messages (import iniziale), più recenti per primi.
+    """Una pagina dei messaggi dell'inbox (import iniziale), più recenti per primi.
 
+    Solo la posta in arrivo, coerente con il sync incrementale (delta query
+    sull'inbox): /me/messages includerebbe anche inviata, archivio, cestino,
+    gonfiando il numero di email indicizzate rispetto a ciò che l'utente vede.
     Il Prefer chiede a Graph il body già in testo semplice: evita di dover
     ripulire l'HTML lato nostro nella maggior parte dei casi.
     Returns: dict con 'value' (messaggi) e opzionale '@odata.nextLink'.
@@ -148,7 +151,7 @@ async def list_messages_page(access_token: str, url: str | None = None) -> dict:
             "$orderby": "receivedDateTime desc",
             "$top": "50",
         })
-        url = f"{GRAPH_BASE_URL}/me/messages?{params}"
+        url = f"{GRAPH_BASE_URL}/me/mailFolders/inbox/messages?{params}"
     return await _graph_get(
         access_token, url,
         headers={"Prefer": 'outlook.body-content-type="text"'},

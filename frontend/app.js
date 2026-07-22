@@ -487,17 +487,15 @@ function renderRail() {
 
     const lines = [];
     if (entry.question) lines.push(`Riferite a: ${escapeHtml(truncate(entry.question, 110))}`);
-    lines.push(ranked
-        ? 'Punteggio della ricerca ibrida (vettoriale + full-text).'
-        : 'Ricerca esaustiva: i documenti sono filtrati per intero, non ordinati per rilevanza.');
-    const context = `<div class="rail-context">${lines.join('<br>')}</div>`;
+    if (!ranked) lines.push('Analisi completa dei documenti pertinenti.');
+    const context = lines.length ? `<div class="rail-context">${lines.join('<br>')}</div>` : '';
 
     dom.railBody.innerHTML = context + sources.map((src, idx) => {
         const score = typeof src.relevance_score === 'number' ? src.relevance_score : null;
         const pct = score !== null ? Math.max(0, Math.min(100, Math.round(score * 100))) : null;
 
         const badge = pct !== null
-            ? `<span class="source-score" title="Punteggio ricerca ibrida: ${score}">${pct}%</span>`
+            ? `<span class="source-score" title="Rilevanza rispetto alla domanda">${pct}%</span>`
             : (src.chunk_count
                 ? `<span class="source-score is-unranked" title="Sezioni del documento analizzate">${src.chunk_count} sez.</span>`
                 : '');
@@ -1780,14 +1778,14 @@ async function syncOutlookNow() {
 async function disconnectOutlook() {
     const ok = await confirmModal({
         title: 'Disconnettere Outlook?',
-        message: 'I token di accesso salvati vengono eliminati e il sync si ferma. Le email già indicizzate restano consultabili in chat.',
+        message: 'L\'accesso alla casella viene revocato e le email indicizzate vengono rimosse dall\'assistente. I documenti PDF caricati non vengono toccati.',
         confirmLabel: 'Disconnetti',
         danger: true,
     });
     if (!ok) return;
 
     try {
-        await apiFetch('/v1/integrations/outlook', { method: 'DELETE' });
+        await apiFetch('/v1/integrations/outlook?purge=true', { method: 'DELETE' });
         showToast('Outlook disconnesso.', 'info');
         await loadOutlookStatus();
     } catch (err) {
