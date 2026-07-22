@@ -28,6 +28,15 @@ class Settings(BaseSettings):
     EMBEDDING_DIMENSIONS: int = 1536
     EMBEDDING_CONCURRENCY: int = 5  # Chiamate parallele max verso l'API Gemini
     GEMINI_EMBEDDING_API_KEY: str = ""
+    # Dimensione dei batch di embedding in fase di ingestion. Prima era una
+    # costante inline in rag.py: centralizzata qui per poterla regolare per
+    # deployment senza toccare il codice.
+    EMBEDDING_BATCH_SIZE: int = 32
+    # Cache in-process degli embedding delle DOMANDE (non dei chunk): domande
+    # ripetute — anche da utenti diversi della stessa azienda — non ripagano
+    # una chiamata all'API. Chiave = testo normalizzato, TTL in secondi.
+    QUERY_EMBEDDING_CACHE_SIZE: int = 512
+    QUERY_EMBEDDING_CACHE_TTL: int = 3600
 
     # === RAG Pipeline ===
     CHUNK_SIZE: int = 1000
@@ -38,8 +47,28 @@ class Settings(BaseSettings):
     # una soglia alta scarterebbe quasi tutto. Vedi _build_context_and_sources,
     # che la usa come pavimento assoluto sotto un filtro relativo.
     SIMILARITY_THRESHOLD: float = 0.35
+    # Filtro di rilevanza relativo: si scartano i chunk sotto questa frazione
+    # del punteggio migliore. Estratto da _build_context_and_sources per
+    # renderlo regolabile senza modificare il codice.
+    SIMILARITY_RELATIVE_FACTOR: float = 0.6
     RRF_K: int = 60
     CANDIDATE_POOL_SIZE: int = 100
+
+    # === Budget di contesto (controllo costi LLM) ===
+    # Tetto in token sul contesto documentale passato all'LLM. I chunk
+    # arrivano già ordinati per rilevanza (rrf_score): superato il budget si
+    # tagliano i meno rilevanti, contenendo costo e latenza ed evitando di
+    # sforare la finestra di contesto del provider scelto dall'utente.
+    # Stima ~4 caratteri per token (vedi backend/tokens.py).
+    MAX_CONTEXT_TOKENS: int = 8000
+    # Le domande di sintesi ("broad") hanno bisogno di più contesto per non
+    # calcolare totali su dati parziali: budget più ampio ma pur sempre finito.
+    BROAD_MAX_CONTEXT_TOKENS: int = 20000
+    # Tetto in caratteri di ogni batch inviato all'estrattore map-reduce: i
+    # batch a numero fisso di chunk possono sforare il contesto se i chunk sono
+    # insolitamente lunghi. Il batch si chiude al raggiungimento di questo
+    # limite o di EXTRACTION_BATCH_SIZE chunk, quale dei due arriva prima.
+    EXTRACTION_MAX_BATCH_CHARS: int = 24000
 
     # === Chunking tabellare ===
     # Le righe di tabella non vengono mai spezzate a metà: si accumulano
@@ -53,6 +82,13 @@ class Settings(BaseSettings):
     EXHAUSTIVE_MAX_CHUNKS: int = 400
     EXTRACTION_BATCH_SIZE: int = 15
     EXTRACTION_CONCURRENCY: int = 4
+
+    # Cache dell'analisi del router (intent + entità). L'esito dipende solo dal
+    # testo della domanda, non dai documenti del tenant, quindi è cacheabile in
+    # modo sicuro fra utenti: una domanda esaustiva ripetuta non ripaga la
+    # chiamata LLM di estrazione entità. TTL breve perché è un dato volatile.
+    ROUTER_CACHE_SIZE: int = 512
+    ROUTER_CACHE_TTL: int = 900
 
     # Domande di sintesi senza un soggetto su cui filtrare ("quanto ho speso
     # a gennaio?", "riepilogami le spese"): non c'è entità da estrarre, ma
