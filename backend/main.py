@@ -4,6 +4,7 @@ import time
 import uuid
 import asyncio
 import json
+import hashlib
 import logging
 import aiofiles
 from collections import defaultdict, deque
@@ -244,6 +245,9 @@ async def document_upload(
     bytes_written = 0
     error_status: int | None = None
     error_detail: str | None = None
+    # Hash del contenuto calcolato in streaming: individua i PDF duplicati
+    # (stesso file ricaricato) senza doverli riesaminare in memoria.
+    hasher = hashlib.sha256()
 
     async with aiofiles.open(file_path, 'wb') as out_file:
         is_first_chunk = True
@@ -259,6 +263,7 @@ async def document_upload(
                 error_status, error_detail = 413, f"File troppo grande (limite {settings.MAX_UPLOAD_SIZE_MB}MB)"
                 break
 
+            hasher.update(content)
             await out_file.write(content)
 
     if error_detail:
@@ -266,12 +271,40 @@ async def document_upload(
             os.remove(file_path)
         raise HTTPException(status_code=error_status, detail=error_detail)
 
+    content_hash = hasher.hexdigest()
+
+    # Deduplica: se lo stesso contenuto è già stato caricato per questa azienda
+    # (ed è indicizzato o in corso), non si ripaga l'embedding né si creano
+    # fonti duplicate. Si scarta il file appena scritto e si rimanda al documento
+    # esistente. Un documento in stato 'error' non blocca il ricaricamento.
+    existing = await db.execute(
+        select(Document).filter(
+            Document.company_id == uuid.UUID(tenant["company_id"]),
+            Document.content_hash == content_hash,
+            Document.status.in_(["ready", "processing"]),
+        )
+    )
+    duplicate = existing.scalars().first()
+    if duplicate:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        logger.info(
+            f"Upload duplicato ignorato (hash {content_hash[:12]}…): "
+            f"già presente come documento {duplicate.id}"
+        )
+        return {
+            "status": "duplicate",
+            "message": "Documento già presente: è stato riutilizzato quello esistente.",
+            "document_id": str(duplicate.id),
+        }
+
     doc_rec = Document(
         id=doc_id,
         company_id=uuid.UUID(tenant["company_id"]),
         filename=safe_filename,
         storage_path=file_path,
-        status="processing"
+        status="processing",
+        content_hash=content_hash,
     )
     db.add(doc_rec)
     await db.commit()
@@ -360,6 +393,62 @@ async def delete_document(doc_id: str, tenant: dict = Depends(get_current_tenant
     
     logger.info(f"Documento {doc_id} eliminato con tutti i chunks associati")
     return {"status": "success"}
+
+
+@app.post("/v1/documents/{doc_id}/reindex")
+async def reindex_document(
+    doc_id: str,
+    background_tasks: BackgroundTasks,
+    tenant: dict = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db)
+):
+    """Ricostruisce i chunk e gli embedding di un documento già caricato.
+
+    Aggiornamento incrementale dell'indice: prima l'unica via per rigenerare i
+    chunk (es. dopo un cambio dei parametri di chunking, o per recuperare un
+    documento rimasto in stato 'error') era cancellare e ricaricare il file.
+    Qui si riparte dal PDF già archiviato, si eliminano i chunk esistenti e si
+    rilancia l'indicizzazione in background sullo stesso record.
+    """
+    result = await db.execute(
+        select(Document).filter(
+            Document.id == uuid.UUID(doc_id),
+            Document.company_id == uuid.UUID(tenant["company_id"])
+        )
+    )
+    doc = result.scalars().first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Documento non trovato")
+
+    if not doc.storage_path or not os.path.exists(doc.storage_path):
+        raise HTTPException(
+            status_code=409,
+            detail="Il file originale non è più disponibile: elimina e ricarica il documento."
+        )
+
+    # Rimuove i chunk esistenti e riporta il documento in elaborazione: i nuovi
+    # chunk verranno inseriti dal task in background, come per un primo upload.
+    await db.execute(
+        sqlalchemy_text("DELETE FROM chunks WHERE document_id = :doc_id"),
+        {"doc_id": doc_id}
+    )
+    await db.execute(
+        sqlalchemy_text(
+            "UPDATE documents SET status = 'processing', error_message = NULL, "
+            "chunk_count = 0 WHERE id = :doc_id"
+        ),
+        {"doc_id": doc_id}
+    )
+    await db.commit()
+
+    background_tasks.add_task(process_pdf_and_chunk, doc.storage_path, tenant["company_id"], doc_id)
+
+    logger.info(f"Reindicizzazione avviata per documento {doc_id}")
+    return {
+        "status": "success",
+        "message": "Reindicizzazione avviata.",
+        "document_id": doc_id,
+    }
 
 
 async def _resolve_conversation_uuid(

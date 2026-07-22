@@ -54,15 +54,20 @@ class Document(Base):
     error_message = Column(TEXT, nullable=True)
     page_count = Column(Integer, nullable=True)
     chunk_count = Column(Integer, nullable=True, default=0)
+    # SHA-256 esadecimale del contenuto del file: individua i duplicati (stesso
+    # PDF ricaricato) prima di rigenerarne chunk ed embedding, evitando costi
+    # di embedding e fonti duplicate nel retrieval.
+    content_hash = Column(String(64), nullable=True)
     created_at = Column(TIMESTAMP, server_default="NOW()")
-    
+
     # Relationships
     company = relationship("Company", back_populates="documents")
     chunks = relationship("Chunk", back_populates="document", cascade="all, delete-orphan")
-    
+
     # Indici per query performanti
     __table_args__ = (
         Index("idx_documents_company_id", "company_id"),
+        Index("idx_documents_company_hash", "company_id", "content_hash"),
     )
 
 
@@ -204,10 +209,69 @@ async def verify_and_migrate_db():
             ALTER TABLE documents ADD COLUMN IF NOT EXISTS error_message TEXT
         """))
 
+        # content_hash su documents: usato per scartare i PDF duplicati prima di
+        # rigenerarne gli embedding (vedi document_upload in main.py).
+        await conn.execute(sqlalchemy_text("""
+            ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64)
+        """))
+
         # Crea gli indici se non esistono
         await conn.execute(sqlalchemy_text("CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id)"))
         await conn.execute(sqlalchemy_text("CREATE INDEX IF NOT EXISTS idx_conversations_company_id ON conversations(company_id)"))
         await conn.execute(sqlalchemy_text("CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_id ON chat_messages(conversation_id)"))
         await conn.execute(sqlalchemy_text("CREATE INDEX IF NOT EXISTS idx_user_llm_settings_user_id ON user_llm_settings(user_id)"))
-        
+        await conn.execute(sqlalchemy_text("CREATE INDEX IF NOT EXISTS idx_documents_company_hash ON documents(company_id, content_hash)"))
+
+    # === Indici di retrieval sui chunk ===
+    # Separati dal blocco precedente e resi non fatali: dipendono da estensioni
+    # (pgvector) e dalla colonna generata text_search, creati dallo schema
+    # iniziale (init_db). Se qualcosa non è pronto, si logga e si prosegue: un
+    # retrieval più lento è preferibile a un'app che non parte.
+    await _ensure_chunk_indexes()
+
     logger.info("✅ Migrazione database completata con successo!")
+
+
+async def _ensure_chunk_indexes():
+    """Crea gli indici che rendono il retrieval scalabile sui chunk.
+
+    - HNSW su embedding (pgvector): senza, ogni ricerca vettoriale è un full
+      scan con kNN esatto, la cui latenza cresce linearmente col numero di
+      chunk. HNSW rende la ricerca approssimata e pressoché costante.
+      vector_cosine_ops perché la query usa la distanza coseno (operatore <=>).
+    - GIN su text_search: rende efficiente il ramo full-text (@@).
+    - GIN trigram su text: serve al ramo ILIKE e al fallback fuzzy
+      (word_similarity / pg_trgm) del retrieval esaustivo.
+
+    Ogni indice è creato in una transazione a sé: il fallimento di uno (es.
+    pgvector non installato) non impedisce la creazione degli altri.
+    """
+    chunk_indexes = [
+        (
+            "idx_chunks_embedding_hnsw",
+            "CREATE INDEX IF NOT EXISTS idx_chunks_embedding_hnsw "
+            "ON chunks USING hnsw (embedding vector_cosine_ops)",
+        ),
+        (
+            "idx_chunks_text_search",
+            "CREATE INDEX IF NOT EXISTS idx_chunks_text_search "
+            "ON chunks USING gin (text_search)",
+        ),
+        (
+            "idx_chunks_text_trgm",
+            "CREATE INDEX IF NOT EXISTS idx_chunks_text_trgm "
+            "ON chunks USING gin (text gin_trgm_ops)",
+        ),
+    ]
+
+    for name, ddl in chunk_indexes:
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(sqlalchemy_text(ddl))
+            logger.info(f"Indice chunk verificato/creato: {name}")
+        except Exception as e:
+            logger.warning(
+                f"Impossibile creare l'indice {name}: {e}. "
+                f"Il retrieval funzionerà comunque, ma più lentamente. "
+                f"Verifica che l'estensione pgvector e la colonna text_search esistano."
+            )
