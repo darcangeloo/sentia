@@ -1284,6 +1284,23 @@ async def delete_llm_settings(
 
 
 
+# === Verifica Google Search Console ===
+# File di verifica della proprietà del dominio api.asksentia.com: Google lo
+# richiede pubblicamente raggiungibile all'esatto path radice, senza
+# autenticazione. Route singola con FileResponse invece di montare l'intera
+# cartella public su "/": un mount sulla radice intercetterebbe le route API.
+_GOOGLE_VERIFICATION_FILENAME = "google18e69f75fbf2558f.html"
+_public_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "public")
+
+
+@app.get(f"/{_GOOGLE_VERIFICATION_FILENAME}", include_in_schema=False)
+async def google_site_verification():
+    file_path = os.path.join(_public_dir, _GOOGLE_VERIFICATION_FILENAME)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File di verifica non trovato")
+    return FileResponse(path=file_path, media_type="text/html")
+
+
 # === Serve Frontend Statico ===
 # Monta la directory frontend per servire i file statici (HTML, CSS, JS)
 frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
