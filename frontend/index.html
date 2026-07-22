@@ -4,23 +4,33 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Sentia — Assistente AI aziendale basato su documenti interni">
-    <title>Sentia Assistant</title>
+    <meta name="theme-color" content="#0f1211">
+    <title>Sentia</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="style.css">
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%231f5d42'/><text x='16' y='22' font-family='Georgia,serif' font-size='16' font-weight='600' fill='white' text-anchor='middle'>S</text></svg>">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%232f7d5d'/><text x='16' y='22' font-family='Georgia,serif' font-size='16' font-weight='600' fill='%230f1211' text-anchor='middle'>S</text></svg>">
+    <script>
+        // Applica il tema prima del primo paint: farlo da app.js
+        // mostrerebbe un lampo di scuro a chi ha scelto il chiaro.
+        (function () {
+            var saved = localStorage.getItem('rag_theme');
+            var theme = saved || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+            document.documentElement.setAttribute('data-theme', theme);
+        })();
+    </script>
 </head>
 <body>
 
-    <!-- ===================== LOGIN PAGE ===================== -->
+    <!-- ===================== LOGIN ===================== -->
     <div id="login-page" class="login-container">
         <div class="login-card">
             <div class="login-logo">
                 <span class="login-logo-icon">S</span>
                 <h1>Sentia</h1>
             </div>
-            <p class="login-subtitle">Accedi con le credenziali della tua azienda per consultare i documenti interni</p>
-            
+            <p class="login-subtitle">Accedi con le credenziali della tua azienda per interrogare i documenti interni.</p>
+
             <form id="login-form">
                 <div class="form-group">
                     <label class="form-label" for="login-email">Email</label>
@@ -30,71 +40,85 @@
                     <label class="form-label" for="login-password">Password</label>
                     <input class="form-input" type="password" id="login-password" placeholder="••••••••" required autocomplete="current-password">
                 </div>
-                <button class="btn-primary" type="submit" id="login-btn">
-                    Accedi
-                </button>
+                <button class="btn-primary btn-block" type="submit" id="login-btn">Accedi</button>
             </form>
-            <div id="login-error" class="login-error hidden"></div>
+            <div id="login-error" class="login-error hidden" role="alert"></div>
+
+            <p class="login-foot">Ogni risposta cita il documento e la pagina da cui proviene.</p>
         </div>
     </div>
 
 
-    <!-- ===================== MAIN APP ===================== -->
+    <!-- ===================== APP ===================== -->
     <div id="app-page" class="app-container hidden">
-        
-        <!-- Mobile Overlay -->
+
         <div id="mobile-overlay" class="mobile-overlay"></div>
-        
-        <!-- === Sidebar === -->
+
+        <!-- ============ SIDEBAR ============ -->
         <aside id="sidebar" class="sidebar">
             <div class="sidebar-header">
                 <span class="sidebar-logo">S</span>
-                <h3 class="sidebar-title"></h3>
+                <div class="sidebar-brand">
+                    <h3 class="sidebar-title">Sentia</h3>
+                    <span class="sidebar-tenant" id="sidebar-tenant">Area riservata</span>
+                </div>
             </div>
 
-            <div class="sidebar-new-chat-container">
-                <button id="btn-new-chat" class="btn-new-chat" title="Nuova conversazione">
-                    <span class="plus-icon">+</span> Nuova Chat
+            <!-- Navigazione: cambia il contenuto della sidebar, non la pagina.
+                 Tenere cronologia e archivio in due pannelli distinti evita
+                 lo scroll infinito quando le conversazioni crescono. -->
+            <nav class="sidebar-nav" role="tablist" aria-label="Sezioni">
+                <button class="nav-tab active" data-panel="chats" role="tab" aria-selected="true">
+                    <span data-icon="chat"></span> Chat
                 </button>
+                <button class="nav-tab" data-panel="archive" role="tab" aria-selected="false">
+                    <span data-icon="folder"></span> Archivio
+                    <span class="nav-badge hidden" id="nav-archive-badge">0</span>
+                </button>
+            </nav>
+
+            <!-- ---- Pannello: conversazioni ---- -->
+            <div class="sidebar-panel active" id="panel-chats">
+                <div class="sidebar-panel-actions">
+                    <button id="btn-new-chat" class="btn-new-chat">
+                        <span data-icon="plus"></span> Nuova conversazione
+                    </button>
+                </div>
+                <div class="sidebar-scroll">
+                    <ul id="chat-list" class="chat-list"></ul>
+                    <div id="chat-empty" class="empty-note hidden">
+                        <p>Nessuna conversazione. Iniziane una.</p>
+                    </div>
+                </div>
             </div>
 
-            <div class="sidebar-content">
-                <div class="sidebar-section-title">Conversazioni</div>
-                <ul id="chat-list" class="chat-list">
-                    <!-- Populated by JS -->
-                </ul>
-                <div id="chat-empty" class="chat-empty hidden">
-                    <p>Nessuna chat recente</p>
+            <!-- ---- Pannello: archivio documenti + coda upload ---- -->
+            <div class="sidebar-panel" id="panel-archive">
+                <div class="sidebar-panel-actions">
+                    <div id="upload-area" class="upload-area" tabindex="0" role="button"
+                         aria-label="Aggiungi PDF: trascina i file o premi Invio per sfogliare">
+                        <span class="upload-area-icon" data-icon="upload"></span>
+                        <span class="upload-area-text">Trascina qui i PDF</span>
+                        <span class="upload-area-hint">o clicca per sceglierne più di uno</span>
+                    </div>
+                    <input type="file" id="file-input" class="file-input-hidden" accept="application/pdf,.pdf" multiple>
                 </div>
 
-                <!-- Collapsible Documents Section -->
-                <div class="sidebar-section-title collapsible" id="docs-accordion-header">
-                    <span>Documenti Aziendali</span>
-                    <span class="accordion-icon" data-icon="chevron-down"></span>
-                </div>
-                <div id="docs-accordion-content" class="docs-accordion-content">
-                    <ul id="doc-list" class="doc-list">
-                        <!-- Populated by JS -->
-                    </ul>
-                    <div id="doc-empty" class="doc-empty hidden">
-                        <div class="doc-empty-icon" data-icon="folder"></div>
-                        <p>Nessun documento caricato</p>
-                    </div>
-
-                    <!-- Upload Area -->
-                    <div class="sidebar-section-title small">Carica PDF</div>
-                    <div id="upload-area" class="upload-area">
-                        <div class="upload-area-icon" data-icon="upload"></div>
-                        <div class="upload-area-text">Trascina un PDF qui</div>
-                        <div class="upload-area-hint">o clicca per sfogliare</div>
-                    </div>
-                    <input type="file" id="file-input" class="file-input-hidden" accept=".pdf">
-
-                    <div id="upload-progress" class="upload-progress">
-                        <div class="progress-bar-container">
-                            <div id="progress-bar" class="progress-bar" style="width: 0%"></div>
+                <div class="sidebar-scroll">
+                    <!-- Coda: compare solo quando c'è qualcosa da mostrare -->
+                    <section id="queue-section" class="queue-section hidden" aria-live="polite">
+                        <div class="section-label">
+                            <span>In lavorazione</span>
+                            <span class="section-label-meta" id="queue-summary"></span>
                         </div>
-                        <div id="upload-status" class="upload-status-text">Caricamento...</div>
+                        <ul id="queue-list" class="queue-list"></ul>
+                        <button id="queue-clear" class="btn-ghost btn-tiny hidden">Rimuovi completati</button>
+                    </section>
+
+                    <div class="section-label"><span>Documenti indicizzati</span></div>
+                    <ul id="doc-list" class="doc-list"></ul>
+                    <div id="doc-empty" class="empty-note hidden">
+                        <p>Nessun documento. Carica un PDF per iniziare a fare domande.</p>
                     </div>
                 </div>
             </div>
@@ -104,79 +128,89 @@
                     <div id="user-avatar" class="user-avatar">U</div>
                     <div class="user-info">
                         <div id="user-email" class="user-email">utente@azienda.it</div>
+                        <div class="user-role">Account aziendale</div>
                     </div>
-                    <button id="btn-settings" class="btn-settings" title="Impostazioni" aria-label="Impostazioni"><span data-icon="settings"></span></button>
-                    <button id="btn-logout" class="btn-logout" title="Logout" aria-label="Logout"><span data-icon="logout"></span> Esci</button>
+                </div>
+                <div class="sidebar-footer-actions">
+                    <button id="btn-theme" class="btn-icon-only" title="Passa al tema chiaro"><span data-icon="sun"></span></button>
+                    <button id="btn-settings" class="btn-icon-only" title="Provider" aria-label="Provider"><span data-icon="settings"></span></button>
+                    <button id="btn-logout" class="btn-icon-only" title="Esci" aria-label="Esci"><span data-icon="logout"></span></button>
                 </div>
             </div>
         </aside>
-        
-        <!-- === Main Content Area === -->
+
+        <!-- ============ MAIN ============ -->
         <main class="main-content">
-            
-            <!-- --- Chat View --- -->
+
+            <!-- ---- Chat ---- -->
             <div id="chat-view" class="chat-view">
-                <div class="chat-header">
-                    <button id="mobile-menu-btn" class="mobile-menu-btn" title="Menu" aria-label="Apri menu"><span data-icon="menu"></span></button>
+                <header class="chat-header">
+                    <button class="mobile-menu-btn" title="Menu" aria-label="Apri menu"><span data-icon="menu"></span></button>
                     <div class="chat-header-info">
                         <h2 id="active-chat-title">Sentia</h2>
-                        <p>Basato sui documenti della tua azienda</p>
+                        <p id="chat-header-sub">Risposte tratte dai documenti della tua azienda</p>
                     </div>
                     <div class="chat-header-actions">
-                        <button id="btn-clear-chat" class="btn-icon" title="Cancella conversazione">
-                            <span data-icon="trash"></span> Cancella chat
+                        <button id="btn-clear-chat" class="btn-ghost btn-small" title="Elimina questa conversazione">
+                            <span data-icon="trash"></span> Elimina
+                        </button>
+                        <button id="btn-toggle-rail" class="btn-ghost btn-small" title="Mostra o nascondi le fonti" aria-expanded="true">
+                            <span data-icon="panel"></span> Fonti
                         </button>
                     </div>
-                </div>
+                </header>
 
                 <div id="chat-messages" class="chat-messages">
-                    <!-- Welcome state -->
                     <div id="chat-welcome" class="chat-welcome">
-                        <div class="welcome-icon" data-icon="sparkle"></div>
                         <h2 class="welcome-title">Chiedi ai tuoi documenti</h2>
                         <p class="welcome-subtitle">
-                            Le risposte arrivano dai file che la tua azienda ha caricato,
-                            con la fonte citata riga per riga.
+                            Sentia legge solo i file caricati dalla tua azienda e cita documento e pagina
+                            per ogni affermazione. Se un dato non c'è, te lo dice.
                         </p>
                         <div class="welcome-suggestions">
-                            <button class="suggestion-chip" data-query="Quali sono le politiche aziendali principali?">Politiche aziendali</button>
-                            <button class="suggestion-chip" data-query="Come funziona la procedura di onboarding?">Procedura onboarding</button>
-                            <button class="suggestion-chip" data-query="Quali sono le norme di sicurezza IT?">Sicurezza IT</button>
-                            <button class="suggestion-chip" data-query="Riassumi le procedure operative standard">Procedure operative</button>
+                            <button class="suggestion-chip" data-query="Elencami tutti i pagamenti effettuati a ">
+                                <span class="chip-kind">Elenco</span> Tutti i pagamenti a un fornitore
+                            </button>
+                            <button class="suggestion-chip" data-query="Qual è il saldo finale dell'ultimo estratto conto?">
+                                <span class="chip-kind">Dato</span> Saldo dell'ultimo estratto conto
+                            </button>
+                            <button class="suggestion-chip" data-query="Quanto ho speso complessivamente questo mese?">
+                                <span class="chip-kind">Totale</span> Spesa complessiva del mese
+                            </button>
+                            <button class="suggestion-chip" data-query="Riassumi i movimenti principali degli ultimi documenti caricati">
+                                <span class="chip-kind">Sintesi</span> Movimenti principali
+                            </button>
                         </div>
                     </div>
                 </div>
 
                 <div class="chat-input-container">
                     <div class="chat-input-wrapper">
-                        <div class="chat-input-box">
-                            <textarea
-                                id="chat-input"
-                                class="chat-input"
-                                placeholder="Scrivi la tua domanda..."
-                                rows="1"
-                            ></textarea>
-                            <button id="btn-send" class="btn-send" disabled title="Invia messaggio" aria-label="Invia messaggio"><span data-icon="send"></span></button>
+                        <div class="chat-input-box" id="composer">
+                            <textarea id="chat-input" class="chat-input" placeholder="Fai una domanda sui documenti…" rows="1"></textarea>
+                            <button id="btn-send" class="btn-send" disabled title="Invia" aria-label="Invia messaggio"><span data-icon="send"></span></button>
                         </div>
-                        <p class="chat-disclaimer">Le risposte si basano sui documenti aziendali caricati</p>
+                        <p class="chat-disclaimer">Invio per inviare · Maiusc+Invio per andare a capo</p>
                     </div>
                 </div>
             </div>
-            
-            <!-- --- Settings View --- -->
+
+            <!-- ---- Provider ---- -->
             <div id="settings-view" class="settings-view hidden">
-                <div class="settings-view-header">
+                <header class="chat-header">
                     <button class="mobile-menu-btn" title="Menu" aria-label="Apri menu"><span data-icon="menu"></span></button>
-                    <div class="settings-view-header-text">
+                    <div class="chat-header-info">
                         <h2>Provider</h2>
-                        <p>Scegli quale servizio genera le risposte per il tuo account.</p>
+                        <p>Scegli il servizio che genera le risposte. La chiave resta cifrata sul server.</p>
                     </div>
-                </div>
-                
+                    <div class="chat-header-actions">
+                        <button id="btn-back-chat" class="btn-ghost btn-small">Torna alla chat</button>
+                    </div>
+                </header>
+
                 <div class="settings-view-content">
                     <div class="provider-grid">
-                        
-                        <!-- OpenAI Card -->
+
                         <div class="provider-card" id="card-openai">
                             <div class="provider-card-header">
                                 <div class="provider-info-header">
@@ -187,29 +221,30 @@
                             </div>
                             <div class="provider-card-body">
                                 <div class="form-group">
-                                    <label class="form-label" for="openai-api-key">API Key</label>
-                                    <input class="form-input" type="password" id="openai-api-key" placeholder="sk-...">
+                                    <label class="form-label" for="openai-api-key">API key</label>
+                                    <input class="form-input" type="password" id="openai-api-key" placeholder="sk-…" autocomplete="off">
                                 </div>
-                                <div class="form-group">
-                                    <label class="form-label" for="openai-base-url">Base URL (opzionale)</label>
-                                    <input class="form-input" type="text" id="openai-base-url" placeholder="https://api.openai.com/v1">
-                                </div>
-                                <div class="form-group">
-                                    <label class="form-label" for="openai-model">Modello</label>
-                                    <select class="model-select" id="openai-model">
-                                        <option value="gpt-5.6-terra" selected>GPT 5.6 Terra</option>
-                                        <option value="gpt-5.6-sol">GPT 5.6 Sol</option>
-                                        <option value="gpt-5.6-luna">GPT 5.6 Luna</option>
-                                    </select>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label class="form-label" for="openai-model">Modello</label>
+                                        <select class="form-input" id="openai-model">
+                                            <option value="gpt-5.6-terra" selected>GPT 5.6 Terra</option>
+                                            <option value="gpt-5.6-sol">GPT 5.6 Sol</option>
+                                            <option value="gpt-5.6-luna">GPT 5.6 Luna</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label" for="openai-base-url">Base URL</label>
+                                        <input class="form-input" type="text" id="openai-base-url" placeholder="predefinito">
+                                    </div>
                                 </div>
                                 <div class="provider-card-footer">
-                                    <button class="btn-save-provider btn-primary" data-provider="openai">Salva e Attiva</button>
-                                    <button class="btn-delete-provider btn-secondary hidden" data-provider="openai" id="openai-delete-btn">Elimina</button>
+                                    <button class="btn-save-provider btn-primary btn-small" data-provider="openai">Salva e attiva</button>
+                                    <button class="btn-delete-provider btn-ghost btn-small hidden" data-provider="openai" id="openai-delete-btn">Elimina</button>
                                 </div>
                             </div>
                         </div>
-                        
-                        <!-- Anthropic Card -->
+
                         <div class="provider-card" id="card-anthropic">
                             <div class="provider-card-header">
                                 <div class="provider-info-header">
@@ -220,24 +255,26 @@
                             </div>
                             <div class="provider-card-body">
                                 <div class="form-group">
-                                    <label class="form-label" for="anthropic-api-key">API Key</label>
-                                    <input class="form-input" type="password" id="anthropic-api-key" placeholder="sk-ant-...">
+                                    <label class="form-label" for="anthropic-api-key">API key</label>
+                                    <input class="form-input" type="password" id="anthropic-api-key" placeholder="sk-ant-…" autocomplete="off">
                                 </div>
-                                <div class="form-group">
-                                    <label class="form-label" for="anthropic-base-url">Base URL (opzionale)</label>
-                                    <input class="form-input" type="text" id="anthropic-base-url" placeholder="https://api.anthropic.com">
-                                </div>
-                                <div class="form-group">
-                                    <label class="form-label" for="anthropic-model">Modello</label>
-                                    <select class="model-select" id="anthropic-model">
-                                        <option value="claude-3-5-sonnet-latest" selected>Claude 3.5 Sonnet</option>
-                                        <option value="claude-3-opus-latest">Claude 3 Opus</option>
-                                        <option value="claude-3-5-haiku-latest">Claude 3.5 Haiku</option>
-                                    </select>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label class="form-label" for="anthropic-model">Modello</label>
+                                        <select class="form-input" id="anthropic-model">
+                                            <option value="claude-opus-4-8" selected>Claude Opus 4.8</option>
+                                            <option value="claude-sonnet-5">Claude Sonnet 5</option>
+                                            <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label" for="anthropic-base-url">Base URL</label>
+                                        <input class="form-input" type="text" id="anthropic-base-url" placeholder="predefinito">
+                                    </div>
                                 </div>
                                 <div class="provider-card-footer">
-                                    <button class="btn-save-provider btn-primary" data-provider="anthropic">Salva e Attiva</button>
-                                    <button class="btn-delete-provider btn-secondary hidden" data-provider="anthropic" id="anthropic-delete-btn">Elimina</button>
+                                    <button class="btn-save-provider btn-primary btn-small" data-provider="anthropic">Salva e attiva</button>
+                                    <button class="btn-delete-provider btn-ghost btn-small hidden" data-provider="anthropic" id="anthropic-delete-btn">Elimina</button>
                                 </div>
                             </div>
                         </div>
@@ -252,39 +289,57 @@
                             </div>
                             <div class="provider-card-body">
                                 <div class="form-group">
-                                    <label class="form-label" for="gemini-api-key">API Key</label>
-                                    <input class="form-input" type="password" id="gemini-api-key" placeholder="sk-ant-...">
+                                    <label class="form-label" for="gemini-api-key">API key</label>
+                                    <input class="form-input" type="password" id="gemini-api-key" placeholder="AIza…" autocomplete="off">
                                 </div>
-                                <div class="form-group">
-                                    <label class="form-label" for="gemini-base-url">Base URL (opzionale)</label>
-                                    <input class="form-input" type="text" id="gemini-base-url" placeholder="https://api.gemini.com">
-                                </div>
-                                <div class="form-group">
-                                    <label class="form-label" for="gemini-model">Modello</label>
-                                    <select class="model-select" id="gemini-model">
-                                        <option value="gemini-3.5-flash" selected>Gemini 3.5 Flash</option>
-                                        <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro Preview</option>
-                                        <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite</option>
-                                    </select>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label class="form-label" for="gemini-model">Modello</label>
+                                        <select class="form-input" id="gemini-model">
+                                            <option value="gemini-3.5-flash" selected>Gemini 3.5 Flash</option>
+                                            <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro Preview</option>
+                                            <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label" for="gemini-base-url">Base URL</label>
+                                        <input class="form-input" type="text" id="gemini-base-url" placeholder="predefinito">
+                                    </div>
                                 </div>
                                 <div class="provider-card-footer">
-                                    <button class="btn-save-provider btn-primary" data-provider="gemini">Salva e Attiva</button>
-                                    <button class="btn-delete-provider btn-secondary hidden" data-provider="gemini" id="gemini-delete-btn">Elimina</button>
+                                    <button class="btn-save-provider btn-primary btn-small" data-provider="gemini">Salva e attiva</button>
+                                    <button class="btn-delete-provider btn-ghost btn-small hidden" data-provider="gemini" id="gemini-delete-btn">Elimina</button>
                                 </div>
                             </div>
                         </div>
 
-                        
                     </div>
                 </div>
             </div>
         </main>
+
+        <!-- ============ LEDGER RAIL (fonti) ============ -->
+        <aside id="sources-rail" class="sources-rail" aria-label="Fonti citate">
+            <header class="rail-header">
+                <div class="rail-title">
+                    <span>Fonti</span>
+                    <span class="rail-count" id="rail-count">0</span>
+                </div>
+                <button id="rail-close" class="btn-icon-only" title="Nascondi le fonti" aria-label="Nascondi le fonti"><span data-icon="close"></span></button>
+            </header>
+            <div class="rail-body" id="rail-body">
+                <div class="rail-empty" id="rail-empty">
+                    <p>Le fonti compaiono qui appena Sentia le recupera, con documento e pagina.</p>
+                </div>
+            </div>
+        </aside>
+
+        <button id="rail-open" class="rail-open-tab hidden" title="Mostra le fonti" aria-label="Mostra le fonti">
+            <span data-icon="panel"></span>
+        </button>
     </div>
 
-    <!-- Toast Container -->
-    <div id="toast-container" class="toast-container"></div>
-
-    <!-- Modal Root (rename/delete/logout confirmations) -->
+    <div id="toast-container" class="toast-container" aria-live="polite"></div>
     <div id="modal-root"></div>
 
     <script src="app.js"></script>

@@ -1,8 +1,12 @@
 /**
- * AI Corporate Assistant — Frontend Application
- * 
- * SPA con autenticazione JWT, chat con streaming SSE,
- * gestione documenti con drag-and-drop upload.
+ * Sentia — Frontend
+ *
+ * SPA senza framework: fetch + DOM, nessuna dipendenza esterna.
+ * Tre aree: sidebar (conversazioni + archivio), chat, ledger rail (fonti).
+ *
+ * Le due parti non ovvie sono documentate dove stanno:
+ *   - UPLOAD QUEUE  : coda FIFO client-side, un file alla volta
+ *   - STREAM        : stato dell'agente, fonti live, coda di rendering
  */
 
 const API_URL = 'https://sentia-i0aq.onrender.com';
@@ -19,19 +23,28 @@ const state = {
     documents: [],
     llmSettings: [],
     isStreaming: false,
-    currentView: 'chat', // 'chat' o 'settings'
+    currentView: 'chat',
+
+    // Rail fonti
+    railOpen: localStorage.getItem('rag_rail') !== 'closed',
+    sourcesByKey: new Map(),   // chiave messaggio -> { sources, question }
+    activeSourceKey: null,
+    msgSeq: 0,
+
+    // Coda upload
+    queue: [],
+    queueRunning: false,
+    queueSeq: 0,
+    uploadDurations: [],       // ms per file completato, per la stima
+
+    // Il tema è già stato applicato dallo script inline in <head>; qui
+    // leggiamo il valore effettivo invece di ricalcolarlo.
+    theme: document.documentElement.getAttribute('data-theme') || 'dark',
 };
 
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => root.querySelectorAll(sel);
 
-// ============================================================
-// DOM REFERENCES
-// ============================================================
-const $ = (sel) => document.querySelector(sel);
-const $$ = (sel) => document.querySelectorAll(sel);
-
-// Escapa testo proveniente da dati utente/documenti prima di inserirlo via
-// innerHTML (titoli conversazione, nomi file, anteprime sorgenti): senza
-// questo, un filename o un titolo malevolo eseguirebbe script (stored XSS).
 function escapeHtml(value) {
     const div = document.createElement('div');
     div.textContent = value ?? '';
@@ -39,7 +52,7 @@ function escapeHtml(value) {
 }
 
 // ============================================================
-// ICON SYSTEM (inline SVG — nessun emoji, nessuna libreria esterna)
+// ICONE (SVG inline, nessuna libreria)
 // ============================================================
 const ICONS = {
     trash: '<path d="M4 6h12"/><path d="M8 6V4.5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1V6"/><path d="M6 6l.8 10a1 1 0 0 0 1 .9h4.4a1 1 0 0 0 1-.9L14 6"/><path d="M8.5 9v5M11.5 9v5"/>',
@@ -49,17 +62,20 @@ const ICONS = {
     file: '<path d="M6.5 2.5h5l3.5 3.5v10.5a1 1 0 0 1-1 1h-7.5a1 1 0 0 1-1-1v-13a1 1 0 0 1 1-1z"/><path d="M11.5 2.5v3.5h3.5"/>',
     folder: '<path d="M3 6a1 1 0 0 1 1-1h3.5l1.5 1.8H16a1 1 0 0 1 1 1V15a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6z"/>',
     upload: '<path d="M10 13V4"/><path d="M6.5 7.5L10 4l3.5 3.5"/><path d="M4 15.5h12"/>',
-    search: '<circle cx="8.5" cy="8.5" r="5.5"/><path d="M16.5 16.5L13 13"/>',
     check: '<circle cx="10" cy="10" r="7.5"/><path d="M6.5 10.3l2.3 2.3 4.7-5.2"/>',
     clock: '<circle cx="10" cy="10" r="7.5"/><path d="M10 5.5V10l3 2"/>',
     alert: '<path d="M10 3.2L17.5 16H2.5L10 3.2z"/><path d="M10 8.3v3.4"/><circle cx="10" cy="14" r="0.7" fill="currentColor" stroke="none"/>',
     chat: '<rect x="3" y="4" width="14" height="9" rx="2"/><path d="M7 13l-1.5 3 3.5-3"/>',
     sparkle: '<path d="M10 2.5l1.6 5.4L17 9.5l-5.4 1.6L10 16.5l-1.6-5.4L3 9.5l5.4-1.6L10 2.5z"/>',
     user: '<circle cx="10" cy="7" r="3"/><path d="M4 16.5c1-3.3 3.8-5 6-5s5 1.7 6 5"/>',
-    'chevron-down': '<path d="M5 8l5 5 5-5"/>',
     menu: '<path d="M3 5.5h14M3 10h14M3 14.5h14"/>',
     logout: '<path d="M8 4H4.5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1H8"/><path d="M12.5 14l4-4-4-4"/><path d="M16 10H7.5"/>',
     close: '<path d="M5 5l10 10M15 5L5 15"/>',
+    plus: '<path d="M10 4v12M4 10h12"/>',
+    panel: '<rect x="2.5" y="4" width="15" height="12" rx="2"/><path d="M12.5 4v12"/>',
+    download: '<path d="M10 3v9"/><path d="M6.5 8.5L10 12l3.5-3.5"/><path d="M4 15.5h12"/>',
+    sun: '<circle cx="10" cy="10" r="3.4"/><path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M15.3 4.7l-1.4 1.4M6.1 13.9l-1.4 1.4"/>',
+    moon: '<path d="M16 11.4A6.6 6.6 0 0 1 8.6 4a6.6 6.6 0 1 0 7.4 7.4z"/>',
 };
 
 function iconMarkup(name, extraClass = '') {
@@ -74,46 +90,11 @@ function injectStaticIcons(root = document) {
     });
 }
 
-// ============================================================
-// SIGNATURE MICRO-INTERACTIONS
-// Magnetic buttons + cursor-tracking spotlight. GPU-only (transform and a
-// CSS custom property, never layout/paint-heavy properties), and skipped
-// entirely for anyone who has asked for reduced motion.
-// ============================================================
 const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-function enableMagnetic(el, strength = 0.25, max = 6) {
-    if (!el || prefersReducedMotion) return;
-    el.addEventListener('mousemove', (e) => {
-        const rect = el.getBoundingClientRect();
-        const dx = e.clientX - (rect.left + rect.width / 2);
-        const dy = e.clientY - (rect.top + rect.height / 2);
-        const mx = Math.max(-max, Math.min(max, dx * strength));
-        const my = Math.max(-max, Math.min(max, dy * strength));
-        el.style.setProperty('--mx', `${mx}px`);
-        el.style.setProperty('--my', `${my}px`);
-    });
-    el.addEventListener('mouseleave', () => {
-        el.style.setProperty('--mx', '0px');
-        el.style.setProperty('--my', '0px');
-    });
-}
-
-function enableSpotlight(container) {
-    if (!container || prefersReducedMotion) return;
-    let pending = false;
-    container.addEventListener('pointermove', (e) => {
-        if (pending) return;
-        pending = true;
-        requestAnimationFrame(() => {
-            const rect = container.getBoundingClientRect();
-            container.style.setProperty('--spot-x', `${e.clientX - rect.left}px`);
-            container.style.setProperty('--spot-y', `${e.clientY - rect.top}px`);
-            pending = false;
-        });
-    });
-}
-
+// ============================================================
+// DOM
+// ============================================================
 const dom = {
     loginPage: $('#login-page'),
     appPage: $('#app-page'),
@@ -122,155 +103,141 @@ const dom = {
     loginPassword: $('#login-password'),
     loginBtn: $('#login-btn'),
     loginError: $('#login-error'),
+
     sidebar: $('#sidebar'),
-    mobileMenuBtns: $$('.mobile-menu-btn'), // uno per header (chat e settings)
+    sidebarTenant: $('#sidebar-tenant'),
     mobileOverlay: $('#mobile-overlay'),
-    
-    // Conversations list
+    navTabs: $$('.nav-tab'),
+    navArchiveBadge: $('#nav-archive-badge'),
+
     chatList: $('#chat-list'),
     chatEmpty: $('#chat-empty'),
     btnNewChat: $('#btn-new-chat'),
-    
-    // Accordion Documents
-    docsAccordionHeader: $('#docs-accordion-header'),
-    docsAccordionContent: $('#docs-accordion-content'),
+
     docList: $('#doc-list'),
     docEmpty: $('#doc-empty'),
     uploadArea: $('#upload-area'),
     fileInput: $('#file-input'),
-    uploadProgress: $('#upload-progress'),
-    progressBar: $('#progress-bar'),
-    uploadStatus: $('#upload-status'),
-    
-    // User info & actions
+    queueSection: $('#queue-section'),
+    queueList: $('#queue-list'),
+    queueSummary: $('#queue-summary'),
+    queueClear: $('#queue-clear'),
+
     userAvatar: $('#user-avatar'),
     userEmail: $('#user-email'),
     btnSettings: $('#btn-settings'),
     btnLogout: $('#btn-logout'),
-    
-    // Views
+    btnTheme: $('#btn-theme'),
+
     chatView: $('#chat-view'),
     settingsView: $('#settings-view'),
-    
-    // Active chat area
+    btnBackChat: $('#btn-back-chat'),
+
     activeChatTitle: $('#active-chat-title'),
     chatMessages: $('#chat-messages'),
     chatWelcome: $('#chat-welcome'),
     chatInput: $('#chat-input'),
+    composer: $('#composer'),
     btnSend: $('#btn-send'),
     btnClearChat: $('#btn-clear-chat'),
     toastContainer: $('#toast-container'),
-    
-    // Provider Settings inputs
+
+    appContainer: $('#app-page'),
+    rail: $('#sources-rail'),
+    railBody: $('#rail-body'),
+    railCount: $('#rail-count'),
+    railClose: $('#rail-close'),
+    railOpen: $('#rail-open'),
+    btnToggleRail: $('#btn-toggle-rail'),
+
     openaiApiKey: $('#openai-api-key'),
     openaiBaseUrl: $('#openai-base-url'),
     openaiModel: $('#openai-model'),
     openaiDeleteBtn: $('#openai-delete-btn'),
-    openaiStatusBadge: $('#openai-status-badge'),
-    
+
     anthropicApiKey: $('#anthropic-api-key'),
     anthropicBaseUrl: $('#anthropic-base-url'),
     anthropicModel: $('#anthropic-model'),
     anthropicDeleteBtn: $('#anthropic-delete-btn'),
-    anthropicStatusBadge: $('#anthropic-status-badge'),
 
     geminiApiKey: $('#gemini-api-key'),
     geminiBaseUrl: $('#gemini-base-url'),
     geminiModel: $('#gemini-model'),
     geminiDeleteBtn: $('#gemini-delete-btn'),
-    geminiStatusBadge: $('#gemini-status-badge'),
 };
 
 
 // ============================================================
-// INITIALIZATION
+// INIT
 // ============================================================
 document.addEventListener('DOMContentLoaded', () => {
     injectStaticIcons();
-    enableSpotlight(dom.loginPage);
-    enableMagnetic(dom.loginBtn);
-    enableMagnetic(dom.btnSend);
+    applyRailState();
+    applyTheme();
 
-    if (state.token) {
-        showApp();
-    } else {
-        showLogin();
-    }
+    if (state.token) showApp();
+    else showLogin();
 
     setupEventListeners();
 });
 
-
 function setupEventListeners() {
-    // Login
     dom.loginForm.addEventListener('submit', handleLogin);
-    
-    // Chat views switching / clicks
     dom.btnNewChat.addEventListener('click', handleCreateConversation);
-    
-    // Chat inputs
+
     dom.chatInput.addEventListener('input', handleInputChange);
     dom.chatInput.addEventListener('keydown', handleInputKeydown);
     dom.btnSend.addEventListener('click', handleSendMessage);
     dom.btnClearChat.addEventListener('click', handleClearChat);
-    
-    // Event delegation for suggestion chips (since they can be dynamically populated)
+
     dom.chatMessages.addEventListener('click', (e) => {
         const chip = e.target.closest('.suggestion-chip');
         if (chip) {
             dom.chatInput.value = chip.dataset.query;
+            dom.chatInput.focus();
             handleInputChange();
-            handleSendMessage();
+            // Le domande con soggetto da completare finiscono con uno spazio:
+            // in quel caso lasciamo il cursore all'utente invece di inviare.
+            if (!chip.dataset.query.endsWith(' ')) handleSendMessage();
+            return;
         }
+        const msg = e.target.closest('.message.assistant');
+        if (msg && msg.dataset.key) selectSources(msg.dataset.key);
     });
-    
-    // Documents Accordion Toggle
-    dom.docsAccordionHeader.addEventListener('click', () => {
-        dom.docsAccordionHeader.classList.toggle('active');
-        dom.docsAccordionContent.classList.toggle('open');
-    });
-    
-    // Documents
+
+    // Navigazione sidebar
+    dom.navTabs.forEach(tab => tab.addEventListener('click', () => setSidebarPanel(tab.dataset.panel)));
+
+    // Upload
     dom.uploadArea.addEventListener('click', () => dom.fileInput.click());
-    dom.fileInput.addEventListener('change', handleFileSelect);
-    
-    // Drag and drop
-    dom.uploadArea.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        dom.uploadArea.classList.add('drag-over');
+    dom.uploadArea.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); dom.fileInput.click(); }
     });
-    dom.uploadArea.addEventListener('dragleave', () => {
-        dom.uploadArea.classList.remove('drag-over');
+    dom.fileInput.addEventListener('change', (e) => {
+        enqueueFiles(e.target.files);
+        e.target.value = '';
     });
-    dom.uploadArea.addEventListener('drop', handleFileDrop);
-    
+    setupDragAndDrop();
+    dom.queueClear.addEventListener('click', clearFinishedQueueItems);
+
+    // Rail
+    dom.btnToggleRail.addEventListener('click', () => setRailOpen(!state.railOpen));
+    dom.railClose.addEventListener('click', () => setRailOpen(false));
+    dom.railOpen.addEventListener('click', () => setRailOpen(true));
+
     // Sidebar mobile
-    dom.mobileMenuBtns.forEach(btn => btn.addEventListener('click', toggleSidebar));
+    $$('.mobile-menu-btn').forEach(btn => btn.addEventListener('click', toggleSidebar));
     dom.mobileOverlay.addEventListener('click', closeSidebar);
-    
-    // Settings screen activation
-    dom.btnSettings.addEventListener('click', () => {
-        setView('settings');
-        closeSidebar();
-    });
-    
-    // Save provider settings
-    $$('.btn-save-provider').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const provider = e.target.dataset.provider;
-            saveProviderSettings(provider);
-        });
-    });
-    
-    // Delete provider settings
-    $$('.btn-delete-provider').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const provider = e.target.dataset.provider;
-            deleteProviderSettings(provider);
-        });
-    });
-    // Logout
+
+    dom.btnSettings.addEventListener('click', () => { setView('settings'); closeSidebar(); });
+    dom.btnBackChat.addEventListener('click', () => setView('chat'));
+    dom.btnTheme.addEventListener('click', toggleTheme);
     dom.btnLogout.addEventListener('click', handleLogout);
+
+    $$('.btn-save-provider').forEach(btn =>
+        btn.addEventListener('click', (e) => saveProviderSettings(e.currentTarget.dataset.provider)));
+    $$('.btn-delete-provider').forEach(btn =>
+        btn.addEventListener('click', (e) => deleteProviderSettings(e.currentTarget.dataset.provider)));
 }
 
 
@@ -279,45 +246,33 @@ function setupEventListeners() {
 // ============================================================
 async function handleLogin(e) {
     e.preventDefault();
-    
     const email = dom.loginEmail.value.trim();
     const password = dom.loginPassword.value;
-    
     if (!email || !password) return;
-    
+
     dom.loginBtn.disabled = true;
-    dom.loginBtn.innerHTML = '<span class="spinner"></span> Accesso in corso...';
+    dom.loginBtn.innerHTML = '<span class="spinner"></span> Accesso…';
     dom.loginError.classList.add('hidden');
-    
+
     try {
         const formData = new URLSearchParams();
         formData.append('username', email);
         formData.append('password', password);
-        
-        // 1. Esegue il Login per ottenere l'access_token
+
         const res = await fetch(`${API_URL}/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: formData,
         });
-        
-        if (!res.ok) {
-            throw new Error('Credenziali non valide');
-        }
-        
+        if (!res.ok) throw new Error('Email o password non corretti.');
+
         const loginData = await res.json();
         state.token = loginData.access_token;
         state.userEmail = email;
         localStorage.setItem('rag_token', state.token);
         localStorage.setItem('rag_email', email);
 
-        // 2. Mostra l'applicazione (showApp() carica anche il nome azienda
-        // nella sidebar tramite loadCompanyName(), riusata anche al ripristino
-        // sessione da localStorage — vedi DOMContentLoaded)
         showApp();
-
-        showToast('Accesso effettuato con successo!', 'success');
-        
     } catch (err) {
         dom.loginError.textContent = err.message;
         dom.loginError.classList.remove('hidden');
@@ -335,16 +290,19 @@ function handleLogout() {
     state.conversations = [];
     state.activeConversationId = null;
     state.llmSettings = [];
+    state.sourcesByKey.clear();
+    state.queue = [];
     localStorage.removeItem('rag_token');
     localStorage.removeItem('rag_email');
     resetLLMSettingsForm();
+    renderQueue();
+    renderRail();
     showLogin();
-    showToast('Disconnessione effettuata', 'info');
 }
 
 
 // ============================================================
-// PAGE / VIEW MANAGEMENT
+// VIEW
 // ============================================================
 function showLogin() {
     dom.loginPage.classList.remove('hidden');
@@ -356,9 +314,7 @@ function showLogin() {
 
 function renderSkeletonRows(container, count = 3) {
     container.innerHTML = Array.from({ length: count }, (_, i) => `
-        <li class="skeleton-row">
-            <span class="skeleton-block" style="width:${70 - i * 12}%"></span>
-        </li>
+        <li class="skeleton-row"><span class="skeleton-block" style="width:${72 - i * 14}%"></span></li>
     `).join('');
 }
 
@@ -366,17 +322,14 @@ function showApp() {
     dom.loginPage.classList.add('hidden');
     dom.appPage.classList.remove('hidden');
 
-    // Set user info
     if (state.userEmail) {
         dom.userEmail.textContent = state.userEmail;
         dom.userAvatar.textContent = state.userEmail.charAt(0).toUpperCase();
     }
 
-    // Skeleton di caricamento (evita liste vuote mentre le richieste sono in volo)
     renderSkeletonRows(dom.chatList);
     renderSkeletonRows(dom.docList);
 
-    // Load lists
     loadDocuments();
     loadConversations();
     loadLLMSettings();
@@ -385,128 +338,219 @@ function showApp() {
 }
 
 async function loadCompanyName() {
-    // Ricerca l'elemento in modo ultra-flessibile per evitare errori 'null'
-    // su varianti di markup della sidebar.
-    const sidebarTitle = document.getElementById("sidebar-title h3")
-                      || document.querySelector(".sidebar-header h3")
-                      || document.querySelector(".sidebar h3")
-                      || document.querySelector(".sidebar-brand h3");
-
-    if (!sidebarTitle) {
-        console.warn("Elemento del titolo della sidebar non trovato nell'HTML corrente.");
-        return;
-    }
-
+    const titleEl = $('.sidebar-title');
     try {
-        const profileRes = await fetch(`${API_URL}/v1/users/me`, {
-            method: 'GET',
-            headers: {
-                'Authorization': `Bearer ${state.token}`,
-                'Content-Type': 'application/json'
-            }
-        });
-
-        if (!profileRes.ok) {
-            throw new Error('Impossibile recuperare le informazioni del profilo aziendale');
-        }
-
-        const data = await profileRes.json();
-
-        if (data && data.company && data.company.name) {
-            sidebarTitle.textContent = data.company.name;
+        const res = await apiFetch('/v1/users/me');
+        const data = await res.json();
+        if (data?.company?.name) {
+            titleEl.textContent = data.company.name;
+            dom.sidebarTenant.textContent = 'Documenti aziendali';
             return;
         }
     } catch (err) {
-        console.warn('loadCompanyName: fallback al dominio email', err);
+        // Silenzioso: il nome azienda è un dettaglio, non deve rompere l'avvio.
     }
-
-    // Fallback nel caso in cui l'endpoint non risponda con l'oggetto atteso
     if (state.userEmail && state.userEmail.includes('@')) {
         const domainName = state.userEmail.split('@')[1].split('.')[0];
-        sidebarTitle.textContent = domainName.charAt(0).toUpperCase() + domainName.slice(1);
+        titleEl.textContent = domainName.charAt(0).toUpperCase() + domainName.slice(1);
+        dom.sidebarTenant.textContent = 'Documenti aziendali';
     }
 }
 
 function setView(view) {
     state.currentView = view;
-    if (view === 'chat') {
-        dom.chatView.classList.remove('hidden');
-        dom.settingsView.classList.add('hidden');
-        dom.btnSettings.style.color = 'var(--text-secondary)';
-    } else if (view === 'settings') {
-        dom.chatView.classList.add('hidden');
-        dom.settingsView.classList.remove('hidden');
-        dom.btnSettings.style.color = 'var(--accent-primary-light)';
-    }
+    const isChat = view === 'chat';
+    dom.chatView.classList.toggle('hidden', !isChat);
+    dom.settingsView.classList.toggle('hidden', isChat);
+    dom.btnSettings.setAttribute('aria-pressed', String(!isChat));
+    applyRailState();
+}
+
+function setSidebarPanel(panel) {
+    dom.navTabs.forEach(tab => {
+        const on = tab.dataset.panel === panel;
+        tab.classList.toggle('active', on);
+        tab.setAttribute('aria-selected', String(on));
+    });
+    $('#panel-chats').classList.toggle('active', panel === 'chats');
+    $('#panel-archive').classList.toggle('active', panel === 'archive');
+}
+
+function toggleSidebar() {
+    dom.sidebar.classList.toggle('open');
+    dom.mobileOverlay.classList.toggle('active');
+}
+function closeSidebar() {
+    dom.sidebar.classList.remove('open');
+    dom.mobileOverlay.classList.remove('active');
 }
 
 
 // ============================================================
-// CONVERSATIONS (CHAT HISTORY)
+// LEDGER RAIL — fonti citate
+// ============================================================
+function applyRailState() {
+    // La rail esiste solo accanto alla chat: in Provider la colonna si
+    // chiude del tutto, altrimenti resterebbe una fascia vuota a destra.
+    const inChat = state.currentView === 'chat';
+    const visible = state.railOpen && inChat;
+
+    dom.appContainer.classList.toggle('rail-collapsed', !visible);
+    dom.rail.classList.toggle('hidden', !inChat);
+    dom.railOpen.classList.toggle('hidden', !inChat || state.railOpen);
+    dom.btnToggleRail.setAttribute('aria-expanded', String(state.railOpen));
+}
+
+function setRailOpen(open) {
+    state.railOpen = open;
+    localStorage.setItem('rag_rail', open ? 'open' : 'closed');
+    applyRailState();
+}
+
+function registerSources(key, sources, question) {
+    state.sourcesByKey.set(key, { sources: sources || [], question: question || '' });
+}
+
+function selectSources(key) {
+    state.activeSourceKey = key;
+    $$('.message').forEach(m => m.classList.toggle('is-selected', m.dataset.key === key));
+    renderRail();
+}
+
+function renderRailSkeleton() {
+    dom.railCount.textContent = '…';
+    dom.railBody.innerHTML = `
+        <div class="skeleton-lines">
+            ${[92, 74, 84].map(w => `
+                <div class="source-card">
+                    <span class="skeleton-block" style="width:${w}%"></span>
+                    <span class="skeleton-block" style="width:40%;margin-top:8px"></span>
+                </div>`).join('')}
+        </div>`;
+}
+
+function renderRail() {
+    const entry = state.sourcesByKey.get(state.activeSourceKey);
+    const sources = entry?.sources || [];
+
+    dom.railCount.textContent = String(sources.length);
+
+    if (sources.length === 0) {
+        dom.railBody.innerHTML = `
+            <div class="rail-empty">
+                <p>Le fonti compaiono qui appena Sentia le recupera, con documento e pagina.</p>
+            </div>`;
+        return;
+    }
+
+    // Le query esaustive recuperano documenti interi con un filtro, non con
+    // un ranking: lì un punteggio non esiste. Dichiararlo è più utile che
+    // lasciare uno spazio vuoto senza spiegazione.
+    const ranked = sources.some(s => typeof s.relevance_score === 'number');
+
+    const lines = [];
+    if (entry.question) lines.push(`Riferite a: ${escapeHtml(truncate(entry.question, 110))}`);
+    lines.push(ranked
+        ? 'Punteggio della ricerca ibrida (vettoriale + full-text).'
+        : 'Ricerca esaustiva: i documenti sono filtrati per intero, non ordinati per rilevanza.');
+    const context = `<div class="rail-context">${lines.join('<br>')}</div>`;
+
+    dom.railBody.innerHTML = context + sources.map((src, idx) => {
+        const score = typeof src.relevance_score === 'number' ? src.relevance_score : null;
+        const pct = score !== null ? Math.max(0, Math.min(100, Math.round(score * 100))) : null;
+
+        const badge = pct !== null
+            ? `<span class="source-score" title="Punteggio ricerca ibrida: ${score}">${pct}%</span>`
+            : (src.chunk_count
+                ? `<span class="source-score is-unranked" title="Sezioni del documento analizzate">${src.chunk_count} sez.</span>`
+                : '');
+
+        return `
+            <article class="source-card" style="--i:${idx}">
+                <div class="source-head">
+                    <span class="source-ordinal">${String(idx + 1).padStart(2, '0')}</span>
+                    <span class="source-filename" title="${escapeHtml(src.filename)}">${escapeHtml(src.filename)}</span>
+                    ${badge}
+                </div>
+                <div class="source-relevance">
+                    ${src.page_number ? `<span class="source-page">p.${escapeHtml(String(src.page_number))}</span>` : ''}
+                    ${pct !== null ? `<span class="relevance-track"><span class="relevance-fill" style="width:${pct}%"></span></span>` : ''}
+                </div>
+                <div class="source-preview">${escapeHtml(src.text_preview || '')}</div>
+            </article>`;
+    }).join('');
+}
+
+function truncate(text, max) {
+    return text.length > max ? text.slice(0, max - 1) + '…' : text;
+}
+
+
+// ============================================================
+// CONVERSAZIONI
 // ============================================================
 async function loadConversations() {
     try {
         const res = await apiFetch('/v1/conversations');
         state.conversations = await res.json();
-        
         renderConversations();
-        
-        // Se non c'è nessuna conversazione attiva, ne creiamo una nuova
+
         if (state.conversations.length === 0) {
             handleCreateConversation();
         } else if (!state.activeConversationId) {
-            // Seleziona la conversazione più recente
             selectConversation(state.conversations[0].id);
         }
     } catch (err) {
-        console.error('Errore caricamento conversazioni:', err);
+        dom.chatList.innerHTML = '';
     }
 }
 
 function renderConversations() {
     dom.chatList.innerHTML = '';
-    
     if (state.conversations.length === 0) {
         dom.chatEmpty.classList.remove('hidden');
         return;
     }
-    
     dom.chatEmpty.classList.add('hidden');
-    
+
     state.conversations.forEach(conv => {
         const li = document.createElement('li');
         li.className = `chat-item ${conv.id === state.activeConversationId ? 'active' : ''}`;
         li.dataset.id = conv.id;
-        
+        // Una voce di lista cliccabile deve essere raggiungibile da tastiera.
+        li.tabIndex = 0;
+        li.setAttribute('role', 'button');
+
         const safeTitle = escapeHtml(conv.title);
         li.innerHTML = `
             <span class="chat-item-icon">${iconMarkup('chat', 'icon-sm')}</span>
             <span class="chat-title" title="${safeTitle}">${safeTitle}</span>
-            <div class="chat-item-actions">
-                <button class="chat-item-btn btn-rename" title="Rinomina" aria-label="Rinomina conversazione">${iconMarkup('edit', 'icon-sm')}</button>
-                <button class="chat-item-btn btn-delete" title="Elimina" aria-label="Elimina conversazione">${iconMarkup('trash', 'icon-sm')}</button>
-            </div>
-        `;
-        
-        // Select chat
+            <span class="chat-item-actions">
+                <button class="chat-item-btn btn-rename" title="Rinomina" aria-label="Rinomina">${iconMarkup('edit', 'icon-sm')}</button>
+                <button class="chat-item-btn btn-delete" title="Elimina" aria-label="Elimina">${iconMarkup('trash', 'icon-sm')}</button>
+            </span>`;
+
         li.addEventListener('click', (e) => {
-            // Se clicca sui bottoni rename/delete, non selezionare
             if (e.target.closest('.chat-item-btn')) return;
             selectConversation(conv.id);
+            closeSidebar();
         });
-        
-        // Rename chat
-        li.querySelector('.btn-rename').addEventListener('click', (e) => {
+        li.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            if (e.target.closest('.chat-item-btn')) return;
+            e.preventDefault();
+            selectConversation(conv.id);
+            closeSidebar();
+        });
+        $('.btn-rename', li).addEventListener('click', (e) => {
             e.stopPropagation();
             handleRenameConversation(conv.id, conv.title);
         });
-        
-        // Delete chat
-        li.querySelector('.btn-delete').addEventListener('click', (e) => {
+        $('.btn-delete', li).addEventListener('click', (e) => {
             e.stopPropagation();
             handleDeleteConversation(conv.id);
         });
-        
+
         dom.chatList.appendChild(li);
     });
 }
@@ -515,59 +559,51 @@ async function handleCreateConversation() {
     try {
         const res = await apiFetch('/v1/conversations', { method: 'POST' });
         const newConv = await res.json();
-        
-        // Inserisci in cima e rendi attiva
         state.conversations.unshift(newConv);
         state.activeConversationId = newConv.id;
-        
         renderConversations();
         selectConversation(newConv.id);
-        showToast('Nuova chat creata', 'success');
     } catch (err) {
-        showToast('Errore durante la creazione della chat', 'error');
+        showToast('Non è stato possibile creare la conversazione.', 'error');
     }
 }
 
 async function selectConversation(convId) {
     state.activeConversationId = convId;
     setView('chat');
-    
-    // Highlight sidebar active item
-    $$('.chat-item').forEach(item => {
-        if (item.dataset.id === convId) {
-            item.classList.add('active');
-        } else {
-            item.classList.remove('active');
-        }
-    });
-    
-    // Aggiorna titolo chat
+
+    $$('.chat-item').forEach(item => item.classList.toggle('active', item.dataset.id === convId));
+
     const conv = state.conversations.find(c => c.id === convId);
-    if (conv) {
-        dom.activeChatTitle.textContent = conv.title;
-    }
-    
-    // Resetta cronologia messaggi UI e carica i nuovi messaggi
+    if (conv) dom.activeChatTitle.textContent = conv.title;
+
     dom.chatMessages.innerHTML = '';
     dom.chatMessages.appendChild(dom.chatWelcome);
-    
+    state.sourcesByKey.clear();
+    state.activeSourceKey = null;
+    renderRail();
+
     try {
         const res = await apiFetch(`/v1/chat/history?conversation_id=${convId}`);
         const messages = await res.json();
-        
         state.messages = messages;
-        
+
         if (messages.length > 0) {
             dom.chatWelcome.classList.add('hidden');
+            let lastQuestion = '';
+            let lastKey = null;
             messages.forEach(msg => {
-                appendMessage(msg.role, msg.content, msg.sources || null, false);
+                if (msg.role === 'user') lastQuestion = msg.content;
+                const { key } = appendMessage(msg.role, msg.content, msg.sources || null, false, lastQuestion);
+                if (msg.role === 'assistant' && msg.sources?.length) lastKey = key;
             });
+            if (lastKey) selectSources(lastKey);
             scrollToBottom();
         } else {
             dom.chatWelcome.classList.remove('hidden');
         }
     } catch (err) {
-        console.error('Errore caricamento messaggi della conversazione:', err);
+        // La conversazione resta visibile anche se lo storico non arriva.
     }
 }
 
@@ -579,44 +615,26 @@ async function handleRenameConversation(convId, oldTitle) {
         confirmLabel: 'Rinomina',
     });
     if (cleanTitle === null) return;
-
-    if (!cleanTitle) {
-        showToast('Il titolo non può essere vuoto', 'warning');
-        return;
-    }
+    if (!cleanTitle) { showToast('Il titolo non può essere vuoto.', 'warning'); return; }
 
     try {
         const res = await apiFetch(`/v1/conversations/${convId}`, {
             method: 'PUT',
-            body: JSON.stringify({ title: cleanTitle })
+            body: JSON.stringify({ title: cleanTitle }),
         });
         const data = await res.json();
-        
-        // Aggiorna lo stato locale
-        state.conversations = state.conversations.map(c => {
-            if (c.id === convId) {
-                return { ...c, title: data.title };
-            }
-            return c;
-        });
-        
+        state.conversations = state.conversations.map(c => c.id === convId ? { ...c, title: data.title } : c);
         renderConversations();
-        
-        // Se è la conversazione attiva, aggiorna anche l'header
-        if (convId === state.activeConversationId) {
-            dom.activeChatTitle.textContent = data.title;
-        }
-        
-        showToast('Conversazione rinominata', 'success');
+        if (convId === state.activeConversationId) dom.activeChatTitle.textContent = data.title;
     } catch (err) {
-        showToast('Errore durante la rinomina', 'error');
+        showToast('Rinomina non riuscita.', 'error');
     }
 }
 
 async function handleDeleteConversation(convId) {
     const ok = await confirmModal({
         title: 'Eliminare la conversazione?',
-        message: 'Questa azione elimina la conversazione e tutti i relativi messaggi in modo permanente.',
+        message: 'La conversazione e tutti i suoi messaggi vengono eliminati definitivamente.',
         confirmLabel: 'Elimina',
         danger: true,
     });
@@ -624,31 +642,22 @@ async function handleDeleteConversation(convId) {
 
     try {
         await apiFetch(`/v1/conversations/${convId}`, { method: 'DELETE' });
-        
-        // Aggiorna lo stato locale
         state.conversations = state.conversations.filter(c => c.id !== convId);
-        
         renderConversations();
-        
-        // Se era la conversazione selezionata, passa a un'altra
+
         if (convId === state.activeConversationId) {
             state.activeConversationId = null;
-            if (state.conversations.length > 0) {
-                selectConversation(state.conversations[0].id);
-            } else {
-                handleCreateConversation();
-            }
+            if (state.conversations.length > 0) selectConversation(state.conversations[0].id);
+            else handleCreateConversation();
         }
-        
-        showToast('Conversazione eliminata', 'success');
     } catch (err) {
-        showToast('Errore durante l\'eliminazione della conversazione', 'error');
+        showToast('Eliminazione non riuscita.', 'error');
     }
 }
 
 
 // ============================================================
-// DOCUMENTS
+// DOCUMENTI
 // ============================================================
 async function loadDocuments() {
     try {
@@ -656,57 +665,105 @@ async function loadDocuments() {
         state.documents = await res.json();
         renderDocuments();
     } catch (err) {
-        console.error('Errore caricamento documenti:', err);
+        dom.docList.innerHTML = '';
     }
 }
 
 function renderDocuments() {
     dom.docList.innerHTML = '';
-    
     if (state.documents.length === 0) {
         dom.docEmpty.classList.remove('hidden');
         return;
     }
-    
     dom.docEmpty.classList.add('hidden');
-    
+
     state.documents.forEach(doc => {
         const li = document.createElement('li');
         li.className = 'doc-item';
-        
+
         const statusClass = doc.status || 'ready';
         const statusMeta = {
-            'ready': { icon: 'check', label: 'Pronto' },
-            'processing': { icon: 'clock', label: 'Elaborazione' },
-            'error': { icon: 'alert', label: 'Errore' },
+            ready: { icon: 'check', label: 'Pronto' },
+            processing: { icon: 'clock', label: 'Indicizzazione' },
+            error: { icon: 'alert', label: 'Errore' },
         }[statusClass] || { icon: 'file', label: statusClass };
 
         const meta = [];
-        if (doc.page_count) meta.push(`${doc.page_count} pag.`);
-        if (doc.chunk_count) meta.push(`${doc.chunk_count} chunks`);
+        if (doc.page_count) meta.push(`${doc.page_count} pag`);
+        if (doc.chunk_count) meta.push(`${doc.chunk_count} sez`);
 
         const safeFilename = escapeHtml(doc.filename);
         li.innerHTML = `
-            <span class="doc-icon">${iconMarkup('file')}</span>
+            <span class="doc-icon">${iconMarkup('file', 'icon-sm')}</span>
             <div class="doc-info">
                 <div class="doc-name" title="${safeFilename}">${safeFilename}</div>
                 <div class="doc-meta">
                     <span class="doc-status ${statusClass}">${iconMarkup(statusMeta.icon, 'icon-sm')} ${statusMeta.label}</span>
-                    ${meta.length ? ' · ' + meta.join(' · ') : ''}
+                    ${meta.length ? `<span>· ${meta.join(' · ')}</span>` : ''}
                 </div>
             </div>
-            <button class="doc-delete-btn" title="Elimina documento" aria-label="Elimina documento" data-id="${escapeHtml(doc.id)}">${iconMarkup('trash', 'icon-sm')}</button>
-        `;
+            <span class="doc-actions">
+                <button class="doc-action-btn is-download" title="Scarica ${safeFilename}" aria-label="Scarica ${safeFilename}">${iconMarkup('download', 'icon-sm')}</button>
+                <button class="doc-action-btn is-delete" title="Elimina ${safeFilename}" aria-label="Elimina ${safeFilename}">${iconMarkup('trash', 'icon-sm')}</button>
+            </span>`;
 
-        li.querySelector('.doc-delete-btn').addEventListener('click', () => deleteDocument(doc.id));
+        $('.is-download', li).addEventListener('click', (e) => downloadDocument(doc, e.currentTarget));
+        $('.is-delete', li).addEventListener('click', () => deleteDocument(doc.id, doc.filename));
         dom.docList.appendChild(li);
     });
 }
 
-async function deleteDocument(docId) {
+/**
+ * Scarica il PDF originale.
+ *
+ * L'endpoint richiede l'header Authorization, quindi un <a href> secco non
+ * basta — e il JWT in query string finirebbe nei log del server e nella
+ * cronologia del browser. Si chiede quindi al backend, che risponde in due
+ * modi a seconda di dove sta il file:
+ *
+ *   - archivio remoto  -> JSON con una URL firmata a breve scadenza; il
+ *                         file viaggia da Supabase al browser senza passare
+ *                         dal server dell'applicazione;
+ *   - disco del server -> il PDF stesso (documenti caricati prima della
+ *                         migrazione all'archivio remoto).
+ */
+async function downloadDocument(doc, btn) {
+    btn.disabled = true;
+    try {
+        const res = await apiFetch(`/v1/documents/${doc.id}/download`);
+        const contentType = res.headers.get('content-type') || '';
+
+        if (contentType.includes('application/json')) {
+            const { url } = await res.json();
+            triggerDownload(url, doc.filename);
+            return;
+        }
+
+        const blobUrl = URL.createObjectURL(await res.blob());
+        triggerDownload(blobUrl, doc.filename);
+        // Il revoke immediato interrompe il salvataggio in alcuni browser.
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+    } catch (err) {
+        showToast(err.message || 'Download non riuscito.', 'error');
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+function triggerDownload(url, filename) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+}
+
+async function deleteDocument(docId, filename) {
     const ok = await confirmModal({
         title: 'Eliminare il documento?',
-        message: 'Il file e tutti i suoi dati vettoriali (chunk ed embedding) verranno eliminati in modo permanente.',
+        message: `${filename} e tutte le sue sezioni indicizzate vengono eliminati definitivamente. Le risposte non potranno più citarlo.`,
         confirmLabel: 'Elimina',
         danger: true,
     });
@@ -714,101 +771,325 @@ async function deleteDocument(docId) {
 
     try {
         await apiFetch(`/v1/documents/${docId}`, { method: 'DELETE' });
-        showToast('Documento eliminato con successo', 'success');
+        showToast('Documento eliminato.', 'success');
         loadDocuments();
     } catch (err) {
-        showToast('Errore durante l\'eliminazione', 'error');
+        showToast('Eliminazione non riuscita.', 'error');
     }
 }
 
-function handleFileDrop(e) {
-    e.preventDefault();
-    dom.uploadArea.classList.remove('drag-over');
-    
-    const file = e.dataTransfer.files[0];
-    if (file && file.type === 'application/pdf') {
-        uploadFile(file);
-    } else {
-        showToast('Solo file PDF sono supportati', 'error');
-    }
+
+// ============================================================
+// UPLOAD QUEUE
+//
+// L'utente sceglie N PDF in una sola azione e li vede tutti subito in
+// coda. L'elaborazione però è rigorosamente sequenziale: la pipeline di
+// embedding è il collo di bottiglia, e mandarle N file insieme allunga
+// il tempo di TUTTI invece di accorciare quello del primo.
+//
+// Un file che fallisce viene marcato e la coda prosegue: un PDF corrotto
+// non deve bloccare gli altri quattro.
+// ============================================================
+const QUEUE_LABELS = {
+    queued: 'In attesa',
+    uploading: 'In elaborazione',
+    indexing: 'In elaborazione',
+    done: 'Completato',
+    error: 'Errore',
+};
+
+function setupDragAndDrop() {
+    let depth = 0;
+
+    // Il drop è accettato ovunque nell'app: chiedere all'utente di
+    // centrare un riquadro da 200px con 5 file in mano è una piccola
+    // crudeltà. Trascinando, la sidebar passa da sola su Archivio.
+    window.addEventListener('dragenter', (e) => {
+        if (!e.dataTransfer?.types?.includes('Files')) return;
+        depth++;
+        if (depth === 1 && !dom.appPage.classList.contains('hidden')) {
+            setSidebarPanel('archive');
+            dom.uploadArea.classList.add('drag-over');
+        }
+    });
+    window.addEventListener('dragover', (e) => {
+        if (e.dataTransfer?.types?.includes('Files')) e.preventDefault();
+    });
+    window.addEventListener('dragleave', (e) => {
+        // Stesso filtro dell'enter: un dragleave di un trascinamento non-file
+        // azzererebbe il contatore mentre i PDF sono ancora sopra la pagina.
+        if (!e.dataTransfer?.types?.includes('Files')) return;
+        depth = Math.max(0, depth - 1);
+        if (depth === 0) dom.uploadArea.classList.remove('drag-over');
+    });
+    window.addEventListener('drop', (e) => {
+        if (!e.dataTransfer?.files?.length) return;
+        e.preventDefault();
+        depth = 0;
+        dom.uploadArea.classList.remove('drag-over');
+        if (dom.appPage.classList.contains('hidden')) return;
+        enqueueFiles(e.dataTransfer.files);
+    });
 }
 
-function handleFileSelect(e) {
-    const file = e.target.files[0];
-    if (file) {
-        uploadFile(file);
+function enqueueFiles(fileList) {
+    const files = Array.from(fileList || []);
+    if (files.length === 0) return;
+
+    const pdfs = files.filter(f => f.type === 'application/pdf' || /\.pdf$/i.test(f.name));
+    const rejected = files.length - pdfs.length;
+    if (rejected > 0) {
+        showToast(`${rejected} file ${rejected === 1 ? 'ignorato' : 'ignorati'}: Sentia legge solo PDF.`, 'warning');
     }
-    e.target.value = ''; // Reset per permettere re-upload dello stesso file
+    if (pdfs.length === 0) return;
+
+    pdfs.forEach(file => {
+        state.queue.push({
+            id: `q${++state.queueSeq}`,
+            file,
+            name: file.name,
+            size: file.size,
+            status: 'queued',
+            progress: 0,
+            detail: '',
+            docId: null,
+        });
+    });
+
+    setSidebarPanel('archive');
+    renderQueue();
+    runQueue();
 }
 
-async function uploadFile(file) {
-    dom.uploadProgress.classList.add('active');
-    dom.progressBar.style.width = '30%';
-    dom.uploadStatus.textContent = `Caricamento ${file.name}...`;
-    
+async function runQueue() {
+    if (state.queueRunning) return;
+    state.queueRunning = true;
+
+    let item;
+    while ((item = state.queue.find(i => i.status === 'queued'))) {
+        await processQueueItem(item);
+    }
+
+    state.queueRunning = false;
+    renderQueue();
+    loadDocuments();
+}
+
+async function processQueueItem(item) {
+    const startedAt = performance.now();
+    item.status = 'uploading';
+    item.progress = 0;
+    item.detail = 'Invio del file…';
+    renderQueue();
+
     try {
+        const data = await uploadWithProgress(item.file, (fraction) => {
+            // L'invio occupa la prima metà della barra: l'indicizzazione,
+            // che dura di più ma non espone progresso, occupa la seconda.
+            item.progress = Math.round(fraction * 50);
+            item.detail = `Invio ${Math.round(fraction * 100)}%`;
+            updateQueueItemDom(item);
+        });
+
+        item.docId = data.document_id || null;
+        item.status = 'indexing';
+        item.progress = 52;
+        item.detail = 'Indicizzazione…';
+        renderQueue();
+
+        if (item.docId) {
+            await waitForIndexing(item);
+        }
+
+        item.status = 'done';
+        item.progress = 100;
+        item.detail = item.chunkCount ? `${item.chunkCount} sezioni indicizzate` : 'Pronto per le domande';
+        state.uploadDurations.push(performance.now() - startedAt);
+    } catch (err) {
+        item.status = 'error';
+        item.progress = 100;
+        item.detail = err.message || 'Caricamento non riuscito.';
+    }
+
+    renderQueue();
+    loadDocuments();
+}
+
+/** POST multipart con progresso reale. fetch() non espone l'upload progress. */
+function uploadWithProgress(file, onProgress) {
+    return new Promise((resolve, reject) => {
         const formData = new FormData();
         formData.append('file', file);
-        
-        dom.progressBar.style.width = '60%';
-        
-        const res = await apiFetch('/v1/documents/upload', {
-            method: 'POST',
-            body: formData,
-            rawBody: true,
-        });
-        
-        dom.progressBar.style.width = '100%';
-        dom.uploadStatus.textContent = 'Indicizzazione in corso...';
-        
-        const data = await res.json();
-        showToast(`${file.name} caricato! Indicizzazione in corso...`, 'success');
-        
-        if (data.document_id) {
-            pollDocumentStatus(data.document_id);
-        }
-        
-        loadDocuments();
-        
-    } catch (err) {
-        showToast('Errore durante il caricamento', 'error');
-    } finally {
-        setTimeout(() => {
-            dom.uploadProgress.classList.remove('active');
-            dom.progressBar.style.width = '0%';
-        }, 1500);
-    }
-}
 
-async function pollDocumentStatus(docId) {
-    const maxAttempts = 60; // 5 minuti max
-    let attempts = 0;
-    
-    const poll = async () => {
-        attempts++;
-        if (attempts > maxAttempts) return;
-        
-        try {
-            const res = await apiFetch(`/v1/documents/${docId}/status`);
-            const data = await res.json();
-            
-            if (data.status === 'ready') {
-                showToast(`Documento indicizzato: ${data.chunk_count} chunks generati`, 'success');
-                loadDocuments();
-                return;
-            } else if (data.status === 'error') {
-                showToast('Errore durante l\'indicizzazione del documento', 'error');
-                loadDocuments();
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `${API_URL}/v1/documents/upload`);
+        xhr.setRequestHeader('Authorization', `Bearer ${state.token}`);
+
+        xhr.upload.addEventListener('progress', (e) => {
+            if (e.lengthComputable) onProgress(e.loaded / e.total);
+        });
+
+        xhr.addEventListener('load', () => {
+            if (xhr.status === 401) {
+                handleLogout();
+                reject(new Error('Sessione scaduta.'));
                 return;
             }
-            
-            setTimeout(poll, 5000);
+            if (xhr.status >= 200 && xhr.status < 300) {
+                try { resolve(JSON.parse(xhr.responseText || '{}')); }
+                catch { resolve({}); }
+                return;
+            }
+            let detail = `Errore ${xhr.status}`;
+            try { detail = JSON.parse(xhr.responseText).detail || detail; } catch { /* corpo non JSON */ }
+            reject(new Error(detail));
+        });
+
+        xhr.addEventListener('error', () => reject(new Error('Connessione interrotta.')));
+        xhr.addEventListener('abort', () => reject(new Error('Caricamento annullato.')));
+
+        xhr.send(formData);
+    });
+}
+
+/** Polling dello stato di indicizzazione. Fa avanzare la barra 52 -> 96. */
+async function waitForIndexing(item) {
+    const maxAttempts = 90;      // ~4,5 minuti
+    const intervalMs = 3000;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        await sleep(intervalMs);
+
+        let data;
+        try {
+            const res = await apiFetch(`/v1/documents/${item.docId}/status`);
+            data = await res.json();
         } catch (err) {
-            // ignore
+            continue; // un colpo a vuoto non è un fallimento: si riprova
         }
-    };
-    
-    setTimeout(poll, 3000);
+
+        if (data.status === 'ready') {
+            item.chunkCount = data.chunk_count;
+            return;
+        }
+        if (data.status === 'error') {
+            throw new Error(data.error || 'Il PDF non è stato indicizzato: potrebbe essere protetto o solo immagini.');
+        }
+
+        // Avanzamento asintotico: si avvicina a 96 senza mai arrivarci,
+        // così la barra non mente dichiarando "quasi finito".
+        item.progress = Math.min(96, item.progress + (96 - item.progress) * 0.25);
+        item.detail = `Indicizzazione… ${formatDuration((attempt + 1) * intervalMs)}`;
+        updateQueueItemDom(item);
+    }
+    throw new Error('Indicizzazione più lenta del previsto. Il documento potrebbe comparire tra poco.');
+}
+
+function renderQueue() {
+    const active = state.queue.filter(i => i.status === 'queued' || i.status === 'uploading' || i.status === 'indexing');
+    const finished = state.queue.filter(i => i.status === 'done' || i.status === 'error');
+
+    dom.queueSection.classList.toggle('hidden', state.queue.length === 0);
+    dom.queueClear.classList.toggle('hidden', finished.length === 0);
+
+    dom.navArchiveBadge.classList.toggle('hidden', active.length === 0);
+    dom.navArchiveBadge.textContent = String(active.length);
+
+    dom.queueSummary.textContent = buildQueueSummary(active, finished);
+
+    dom.queueList.innerHTML = '';
+    state.queue.forEach(item => dom.queueList.appendChild(buildQueueItemEl(item)));
+}
+
+function buildQueueSummary(active, finished) {
+    if (state.queue.length === 0) return '';
+    if (active.length === 0) return `${finished.length} completati`;
+
+    const parts = [`${finished.length}/${state.queue.length}`];
+    const eta = estimateRemaining(active.length);
+    if (eta) parts.push(`≈ ${eta}`);
+    return parts.join(' · ');
+}
+
+/** Stima grezza ma onesta: media dei file già completati in questa sessione. */
+function estimateRemaining(activeCount) {
+    if (state.uploadDurations.length === 0) return '';
+    const avg = state.uploadDurations.reduce((a, b) => a + b, 0) / state.uploadDurations.length;
+    return formatDuration(avg * activeCount);
+}
+
+function buildQueueItemEl(item) {
+    const li = document.createElement('li');
+    li.className = 'queue-item';
+    li.dataset.state = item.status === 'uploading' || item.status === 'indexing' ? 'processing' : item.status;
+    li.dataset.id = item.id;
+
+    li.innerHTML = `
+        <div class="queue-row">
+            <span class="queue-dot"></span>
+            <span class="queue-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</span>
+            <span class="queue-state">${QUEUE_LABELS[item.status]}</span>
+        </div>
+        ${item.detail ? `<div class="queue-detail">${escapeHtml(item.detail)}</div>` : ''}
+        ${item.status === 'error' ? '<button class="queue-retry">Riprova</button>' : ''}
+        <span class="queue-track"><span class="queue-fill" style="width:${item.progress}%"></span></span>`;
+
+    const retry = $('.queue-retry', li);
+    if (retry) {
+        retry.addEventListener('click', () => {
+            item.status = 'queued';
+            item.progress = 0;
+            item.detail = '';
+            renderQueue();
+            runQueue();
+        });
+    }
+    return li;
+}
+
+/** Aggiorna solo barra e dettaglio: ridisegnare la lista a ogni tick
+ *  farebbe ripartire l'animazione di comparsa di ogni riga. */
+function updateQueueItemDom(item) {
+    const li = dom.queueList.querySelector(`[data-id="${item.id}"]`);
+    if (!li) return;
+    const fill = $('.queue-fill', li);
+    if (fill) fill.style.width = `${item.progress}%`;
+    const detail = $('.queue-detail', li);
+    if (detail) detail.textContent = item.detail;
+}
+
+function clearFinishedQueueItems() {
+    state.queue = state.queue.filter(i => i.status !== 'done' && i.status !== 'error');
+    renderQueue();
+}
+
+function formatDuration(ms) {
+    const s = Math.round(ms / 1000);
+    if (s < 60) return `${s}s`;
+    return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+}
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+
+// ============================================================
+// TEMA
+//
+// Il bottone dice dove porta, non dove sei: chi è al buio legge "Passa
+// al tema chiaro" e vede il sole. Etichetta e icona indicano entrambe
+// la destinazione.
+// ============================================================
+function applyTheme() {
+    const isDark = state.theme === 'dark';
+    document.documentElement.setAttribute('data-theme', state.theme);
+    dom.btnTheme.innerHTML = iconMarkup(isDark ? 'sun' : 'moon');
+    dom.btnTheme.title = isDark ? 'Passa al tema chiaro' : 'Passa al tema scuro';
+}
+
+function toggleTheme() {
+    state.theme = state.theme === 'dark' ? 'light' : 'dark';
+    localStorage.setItem('rag_theme', state.theme);
+    applyTheme();
 }
 
 
@@ -818,39 +1099,95 @@ async function pollDocumentStatus(docId) {
 function handleInputChange() {
     const input = dom.chatInput;
     input.style.height = 'auto';
-    input.style.height = Math.min(input.scrollHeight, 150) + 'px';
-    
+    input.style.height = Math.min(input.scrollHeight, 180) + 'px';
     dom.btnSend.disabled = !input.value.trim() || state.isStreaming;
 }
 
 function handleInputKeydown(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        if (!dom.btnSend.disabled) {
-            handleSendMessage();
-        }
+        if (!dom.btnSend.disabled) handleSendMessage();
     }
+}
+
+// Micro-messaggi mostrati mentre l'agente lavora. Descrivono le fasi reali
+// della pipeline (retrieval, confronto fonti, composizione); un evento
+// `status` dal backend, quando arriva, li sostituisce.
+const AGENT_STEPS = [
+    'Cerco nei documenti…',
+    'Confronto le fonti…',
+    'Verifico i riferimenti…',
+    'Compongo la risposta…',
+];
+
+function createAgentStatus() {
+    const wrap = document.createElement('div');
+    wrap.className = 'agent-status';
+    wrap.innerHTML = `
+        <div class="agent-status-line">
+            <span class="agent-status-text">${AGENT_STEPS[0]}</span>
+            <span class="caret"></span>
+        </div>
+        <div class="touched-sources"></div>`;
+
+    const textEl = $('.agent-status-text', wrap);
+    let idx = 0;
+    let pinned = false;
+
+    const timer = setInterval(() => {
+        if (pinned) return;
+        idx = (idx + 1) % AGENT_STEPS.length;
+        swapText(AGENT_STEPS[idx]);
+    }, 2600);
+
+    function swapText(next) {
+        textEl.classList.add('swap');
+        setTimeout(() => {
+            textEl.textContent = next;
+            textEl.classList.remove('swap');
+        }, 180);
+    }
+
+    return {
+        el: wrap,
+        /** Uno status reale dal backend batte sempre i messaggi generici. */
+        setStatus(text) { pinned = true; swapText(text); },
+        addSource(filename) {
+            const badges = $('.touched-sources', wrap);
+            const badge = document.createElement('span');
+            badge.className = 'touched-badge';
+            badge.innerHTML = `${iconMarkup('file', 'icon-sm')} ${escapeHtml(filename)}`;
+            badges.appendChild(badge);
+        },
+        stop() { clearInterval(timer); },
+    };
 }
 
 async function handleSendMessage() {
     const query = dom.chatInput.value.trim();
     if (!query || state.isStreaming) return;
-    
-    // Nascondi welcome, mostra messaggi
+
     dom.chatWelcome.classList.add('hidden');
-    
-    // Aggiungi il messaggio dell'utente
     appendMessage('user', query);
     state.messages.push({ role: 'user', content: query });
-    
-    // Reset input
+
     dom.chatInput.value = '';
     dom.chatInput.style.height = 'auto';
     dom.btnSend.disabled = true;
-    
-    const typingEl = showTypingIndicator();
     state.isStreaming = true;
-    
+    dom.composer.classList.add('is-generating');
+
+    // Il messaggio dell'assistente nasce subito e ospita lo stato: così
+    // la risposta non "salta" in un nuovo blocco quando inizia ad arrivare.
+    const { contentEl, messageEl, key } = appendMessage('assistant', '', null, true, query);
+    const status = createAgentStatus();
+    contentEl.appendChild(status.el);
+
+    renderRailSkeleton();
+
+    let fullContent = '';
+    let sources = [];
+
     try {
         const res = await fetch(`${API_URL}/v1/chat/stream`, {
             method: 'POST',
@@ -860,219 +1197,187 @@ async function handleSendMessage() {
             },
             body: JSON.stringify({ query, conversation_id: state.activeConversationId }),
         });
-        
+
         if (res.status === 401) {
             handleLogout();
-            showToast('Sessione scaduta, effettua nuovamente il login', 'error');
+            showToast('Sessione scaduta. Accedi di nuovo.', 'error');
             return;
         }
-        
         if (!res.ok) {
-            const errData = await res.json();
-            throw new Error(errData.detail || 'Errore comunicazione con il server');
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.detail || 'Il server non ha risposto.');
         }
-        
-        typingEl.remove();
-        
-        const { contentEl, messageEl } = appendMessage('assistant', '', null, true);
-        let fullContent = '';
-        let sources = [];
-        
+
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
-        
+        let started = false;
+
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            
+
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
-            buffer = lines.pop(); // Keep incomplete line
-            
+            buffer = lines.pop();
+
             for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                    try {
-                        const event = JSON.parse(line.slice(6));
-                        
-                        if (event.type === 'sources') {
-                            sources = event.data;
-                        } else if (event.type === 'status') {
-                            // Le query esaustive impiegano diversi secondi
-                            // prima del primo token: mostriamo intanto lo
-                            // stato di avanzamento, sovrascritto appena
-                            // arriva la risposta vera.
-                            contentEl.innerHTML = `<p style="opacity:0.7"><em>${escapeHtml(event.data)}</em></p>`;
-                            scrollToBottom();
-                        } else if (event.type === 'token') {
-                            fullContent += event.data;
-                            contentEl.innerHTML = formatMarkdown(fullContent);
-                            scrollToBottom();
-                        } else if (event.type === 'done') {
-                            if (sources.length > 0) {
-                                const sourcesEl = createSourcesPanel(sources);
-                                messageEl.querySelector('.message-body').appendChild(sourcesEl);
-                            }
-                            state.messages.push({ role: 'assistant', content: fullContent, sources });
-                            
-                            // Aggiorna il titolo locale della conversazione se era la prima domanda
-                            const actConv = state.conversations.find(c => c.id === state.activeConversationId);
-                            if (actConv && (actConv.title === 'Nuova conversazione' || actConv.title === 'Nuova Chat')) {
-                                loadConversations();
-                            }
-                        } else if (event.type === 'error') {
-                            contentEl.innerHTML = `<p style="color: var(--color-error)">${escapeHtml(event.data)}</p>`;
-                        }
-                    } catch (parseErr) {
-                        // ignore
+                if (!line.startsWith('data: ')) continue;
+                let event;
+                try { event = JSON.parse(line.slice(6)); } catch { continue; }
+
+                if (event.type === 'sources') {
+                    sources = event.data || [];
+                    registerSources(key, sources, query);
+                    // I badge atterrano uno alla volta: si vede il retrieval
+                    // accadere, invece di un blocco che appare tutto insieme.
+                    revealSourcesProgressively(sources, status, key);
+
+                } else if (event.type === 'status') {
+                    status.setStatus(event.data);
+
+                } else if (event.type === 'token') {
+                    if (!started) {
+                        started = true;
+                        status.stop();
+                        contentEl.innerHTML = '';
                     }
+                    fullContent += event.data;
+                    renderStreamingContent(contentEl, fullContent);
+                    scrollToBottom();
+
+                } else if (event.type === 'done') {
+                    status.stop();
+                    contentEl.innerHTML = formatMarkdown(fullContent);
+                    attachSourcesButton(messageEl, key, sources.length);
+                    state.messages.push({ role: 'assistant', content: fullContent, sources });
+                    selectSources(key);
+
+                    const conv = state.conversations.find(c => c.id === state.activeConversationId);
+                    if (conv && /^Nuova (conversazione|Chat)$/i.test(conv.title)) loadConversations();
+
+                } else if (event.type === 'error') {
+                    status.stop();
+                    contentEl.innerHTML = `<p class="stream-error">${escapeHtml(event.data)}</p>`;
                 }
             }
         }
-        
     } catch (err) {
-        typingEl.remove();
-        appendMessage('assistant', `Errore: ${err.message}. Riprova.`);
-        console.error('Chat error:', err);
+        status.stop();
+        contentEl.innerHTML = `<p class="stream-error">${escapeHtml(err.message)} Riprova.</p>`;
     } finally {
+        status.stop();
         state.isStreaming = false;
+        dom.composer.classList.remove('is-generating');
         handleInputChange();
+        renderRail();
         scrollToBottom();
     }
 }
 
+function revealSourcesProgressively(sources, status, key) {
+    // La rail si disegna una volta sola: lo scaglionamento delle card è
+    // nel CSS (animation-delay su --i). Ridisegnarla a ogni fonte
+    // farebbe ripartire da capo l'animazione di quelle già comparse.
+    state.activeSourceKey = key;
+    renderRail();
+
+    if (prefersReducedMotion) {
+        sources.forEach(s => status.addSource(s.filename));
+        return;
+    }
+    sources.forEach((src, i) => {
+        setTimeout(() => status.addSource(src.filename), i * 90);
+    });
+}
+
+/**
+ * Rendering durante lo streaming.
+ *
+ * Il markdown viene ricalcolato solo sulle righe già complete; la riga in
+ * corso resta testo semplice, con gli ultimi caratteri in verde. Effetto:
+ * un bordo d'onda che segue la scrittura e si spegne da solo, senza
+ * riformattare l'intero messaggio a ogni token.
+ */
+const FRESH_TAIL_CHARS = 14;
+
+function renderStreamingContent(contentEl, full) {
+    const cut = full.lastIndexOf('\n');
+    const stable = cut === -1 ? '' : full.slice(0, cut);
+    const tail = cut === -1 ? full : full.slice(cut + 1);
+
+    const settled = tail.slice(0, Math.max(0, tail.length - FRESH_TAIL_CHARS));
+    const fresh = tail.slice(Math.max(0, tail.length - FRESH_TAIL_CHARS));
+
+    contentEl.innerHTML =
+        formatMarkdown(stable) +
+        `<p class="stream-tail">${escapeHtml(settled)}<span class="tok-fresh">${escapeHtml(fresh)}</span><span class="caret"></span></p>`;
+}
+
+function attachSourcesButton(messageEl, key, count) {
+    if (!count) return;
+    const foot = document.createElement('footer');
+    foot.className = 'message-foot';
+    foot.innerHTML = `<button class="message-sources-btn">${iconMarkup('file', 'icon-sm')} ${count} ${count === 1 ? 'fonte' : 'fonti'}</button>`;
+    foot.querySelector('button').addEventListener('click', () => {
+        setRailOpen(true);
+        selectSources(key);
+    });
+    $('.message-body', messageEl).appendChild(foot);
+}
+
 async function handleClearChat() {
     const ok = await confirmModal({
-        title: 'Cancellare la conversazione?',
-        message: 'La conversazione corrente e tutti i relativi messaggi verranno cancellati in modo permanente.',
-        confirmLabel: 'Cancella',
+        title: 'Eliminare la conversazione?',
+        message: 'La conversazione corrente e tutti i suoi messaggi vengono eliminati definitivamente.',
+        confirmLabel: 'Elimina',
         danger: true,
     });
     if (!ok) return;
 
     try {
         await apiFetch(`/v1/conversations/${state.activeConversationId}`, { method: 'DELETE' });
-        
-        // Rimuove da locale ed eventualmente ne crea una nuova
         state.conversations = state.conversations.filter(c => c.id !== state.activeConversationId);
         state.activeConversationId = null;
-        
-        showToast('Conversazione cancellata', 'info');
         loadConversations();
     } catch (err) {
-        showToast('Errore durante la cancellazione', 'error');
+        showToast('Eliminazione non riuscita.', 'error');
     }
 }
 
 
 // ============================================================
-// MESSAGE RENDERING
+// RENDERING MESSAGGI
 // ============================================================
-function appendMessage(role, content, sources = null, isStreaming = false) {
-    const messageEl = document.createElement('div');
+function appendMessage(role, content, sources = null, isStreaming = false, question = '') {
+    const key = `m${++state.msgSeq}`;
+
+    const messageEl = document.createElement('article');
     messageEl.className = `message ${role}`;
-    
+    messageEl.dataset.key = key;
+
     const avatar = iconMarkup(role === 'user' ? 'user' : 'sparkle', 'icon-sm');
     const sender = role === 'user' ? 'Tu' : 'Sentia';
-
-    const contentEl = document.createElement('div');
-    contentEl.className = 'message-content';
-    contentEl.innerHTML = isStreaming ? '' : formatMarkdown(content);
 
     messageEl.innerHTML = `
         <div class="message-avatar">${avatar}</div>
         <div class="message-body">
-            <div class="message-sender">${sender}</div>
-        </div>
-    `;
-    
-    messageEl.querySelector('.message-body').appendChild(contentEl);
-    
+            <header class="message-head"><span class="message-sender">${sender}</span></header>
+        </div>`;
+
+    const contentEl = document.createElement('div');
+    contentEl.className = 'message-content';
+    if (!isStreaming) contentEl.innerHTML = formatMarkdown(content);
+    $('.message-body', messageEl).appendChild(contentEl);
+
     if (sources && sources.length > 0) {
-        const sourcesEl = createSourcesPanel(sources);
-        messageEl.querySelector('.message-body').appendChild(sourcesEl);
+        registerSources(key, sources, question);
+        attachSourcesButton(messageEl, key, sources.length);
     }
-    
+
     dom.chatMessages.appendChild(messageEl);
     scrollToBottom();
-    
-    return { contentEl, messageEl };
-}
-
-function showTypingIndicator() {
-    const el = document.createElement('div');
-    el.className = 'message assistant';
-    el.innerHTML = `
-        <div class="message-avatar">${iconMarkup('sparkle', 'icon-sm')}</div>
-        <div class="message-body">
-            <div class="message-sender">Sentia</div>
-            <div class="typing-indicator">
-                <span></span><span></span><span></span>
-            </div>
-        </div>
-    `;
-    dom.chatMessages.appendChild(el);
-    scrollToBottom();
-    return el;
-}
-
-function createSourcesPanel(sources) {
-    const panel = document.createElement('div');
-    panel.className = 'sources-panel';
-    
-    const toggle = document.createElement('button');
-    toggle.className = 'sources-toggle';
-    toggle.setAttribute('aria-expanded', 'false');
-    toggle.innerHTML = `${iconMarkup('search', 'icon-sm')} Fonti utilizzate (${sources.length}) <span class="chevron">${iconMarkup('chevron-down', 'icon-sm')}</span>`;
-
-    const list = document.createElement('div');
-    list.className = 'sources-list';
-
-    sources.forEach((src, idx) => {
-        const item = document.createElement('div');
-        item.className = 'source-item';
-        item.style.setProperty('--i', idx); // stagger per la comparsa dei riquadri fonte
-
-        const pageInfo = src.page_number ? `Pagina ${src.page_number}` : '';
-        const scoreHtml = src.relevance_score
-            ? `<span class="source-score">${Math.round(src.relevance_score * 100)}% rilevanza</span>`
-            : '';
-
-        item.innerHTML = `
-            <div class="source-filename">${iconMarkup('file', 'icon-sm')} ${escapeHtml(src.filename)} ${scoreHtml}</div>
-            ${pageInfo ? `<div class="source-page">${escapeHtml(pageInfo)}</div>` : ''}
-            <div class="source-preview">${escapeHtml(src.text_preview)}</div>
-        `;
-        list.appendChild(item);
-    });
-
-    toggle.addEventListener('click', () => {
-        const expanded = toggle.classList.toggle('expanded');
-        list.classList.toggle('visible');
-        toggle.setAttribute('aria-expanded', String(expanded));
-    });
-    
-    panel.appendChild(toggle);
-    panel.appendChild(list);
-    return panel;
-}
-
-function formatMarkdown(text) {
-    if (!text) return '';
-    
-    let html = text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-        .replace(/\*(.*?)\*/g, '<em>$1</em>')
-        .replace(/`(.*?)`/g, '<code>$1</code>')
-        .replace(/\n\n/g, '</p><p>')
-        .replace(/\n/g, '<br>');
-    
-    html = '<p>' + html + '</p>';
-    html = html.replace(/<p>\s*<\/p>/g, '');
-    return html;
+    return { contentEl, messageEl, key };
 }
 
 function scrollToBottom() {
@@ -1083,7 +1388,147 @@ function scrollToBottom() {
 
 
 // ============================================================
-// SETTINGS VIEWS MANAGEMENT
+// MARKDOWN
+//
+// Renderer minimo ma con le tabelle: l'output di punta del prodotto è
+// l'elenco dei movimenti, e senza supporto tabellare arriverebbe a video
+// come una colonna di pipe.
+// ============================================================
+const AMOUNT_RE = /^[-+]?\s*(€|EUR)?\s*[\d.]+(,\d{1,2})?\s*(€|EUR)?$/i;
+const DATE_RE = /^\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4}$/;
+
+function inlineMarkdown(text) {
+    return escapeHtml(text)
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+}
+
+function splitTableRow(line) {
+    return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
+}
+
+function cellClass(value) {
+    if (AMOUNT_RE.test(value)) return ' class="num"';
+    if (DATE_RE.test(value)) return ' class="mono"';
+    return '';
+}
+
+/** Classe della colonna c: vale se la maggioranza delle celle concorda. */
+function columnClass(rows, c) {
+    if (rows.length === 0) return '';
+    let amounts = 0, dates = 0;
+    rows.forEach(cells => {
+        const v = cells[c] ?? '';
+        if (AMOUNT_RE.test(v)) amounts++;
+        else if (DATE_RE.test(v)) dates++;
+    });
+    if (amounts > rows.length / 2) return ' class="num"';
+    if (dates > rows.length / 2) return ' class="mono"';
+    return '';
+}
+
+function formatMarkdown(text) {
+    if (!text) return '';
+    const lines = text.split('\n');
+    const out = [];
+    let i = 0;
+
+    const isTableSep = (l) => /^\s*\|?[\s:|-]*-[\s:|-]*$/.test(l) && l.includes('-');
+
+    while (i < lines.length) {
+        const line = lines[i];
+
+        if (/^\s*$/.test(line)) { i++; continue; }
+
+        // Tabella
+        if (/^\s*\|/.test(line) && i + 1 < lines.length && isTableSep(lines[i + 1])) {
+            const headers = splitTableRow(line);
+            i += 2;
+            const rows = [];
+            while (i < lines.length && /^\s*\|/.test(lines[i])) {
+                rows.push(splitTableRow(lines[i]));
+                i++;
+            }
+            // L'allineamento si decide per colonna guardando i dati, non la
+            // singola cella: altrimenti l'intestazione "Importo" resta a
+            // sinistra mentre i suoi numeri vanno a destra.
+            const colClass = headers.map((_, c) => columnClass(rows, c));
+            const thead = headers.map((h, c) =>
+                `<th${colClass[c]}>${inlineMarkdown(h)}</th>`).join('');
+            const tbody = rows.map(cells =>
+                `<tr>${cells.map((cell, c) => `<td${colClass[c] || cellClass(cell)}>${inlineMarkdown(cell)}</td>`).join('')}</tr>`).join('');
+            out.push(`<div class="md-table-wrap"><table><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table></div>`);
+            continue;
+        }
+
+        // Riga orizzontale
+        if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { out.push('<hr>'); i++; continue; }
+
+        // Titolo
+        const heading = line.match(/^\s*(#{1,6})\s+(.*)$/);
+        if (heading) {
+            const level = Math.min(heading[1].length + 2, 6);
+            out.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`);
+            i++;
+            continue;
+        }
+
+        // Citazione
+        if (/^\s*>\s?/.test(line)) {
+            const buf = [];
+            while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+                buf.push(lines[i].replace(/^\s*>\s?/, ''));
+                i++;
+            }
+            out.push(`<blockquote>${buf.map(inlineMarkdown).join('<br>')}</blockquote>`);
+            continue;
+        }
+
+        // Elenco puntato
+        if (/^\s*[-*+]\s+/.test(line)) {
+            const buf = [];
+            while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
+                buf.push(lines[i].replace(/^\s*[-*+]\s+/, ''));
+                i++;
+            }
+            out.push(`<ul>${buf.map(b => `<li>${inlineMarkdown(b)}</li>`).join('')}</ul>`);
+            continue;
+        }
+
+        // Elenco numerato
+        if (/^\s*\d+[.)]\s+/.test(line)) {
+            const buf = [];
+            while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) {
+                buf.push(lines[i].replace(/^\s*\d+[.)]\s+/, ''));
+                i++;
+            }
+            out.push(`<ol>${buf.map(b => `<li>${inlineMarkdown(b)}</li>`).join('')}</ol>`);
+            continue;
+        }
+
+        // Paragrafo
+        const buf = [];
+        while (i < lines.length &&
+               !/^\s*$/.test(lines[i]) &&
+               !/^\s*\|/.test(lines[i]) &&
+               !/^\s*(#{1,6})\s/.test(lines[i]) &&
+               !/^\s*>\s?/.test(lines[i]) &&
+               !/^\s*[-*+]\s+/.test(lines[i]) &&
+               !/^\s*\d+[.)]\s+/.test(lines[i]) &&
+               !/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(lines[i])) {
+            buf.push(lines[i]);
+            i++;
+        }
+        if (buf.length) out.push(`<p>${buf.map(inlineMarkdown).join('<br>')}</p>`);
+    }
+
+    return out.join('');
+}
+
+
+// ============================================================
+// PROVIDER
 // ============================================================
 async function loadLLMSettings() {
     try {
@@ -1091,110 +1536,84 @@ async function loadLLMSettings() {
         state.llmSettings = await res.json();
         renderLLMSettings();
     } catch (err) {
-        console.error('Errore caricamento impostazioni LLM:', err);
+        // Le impostazioni non caricate non impediscono di usare la chat.
     }
 }
 
 function resetLLMSettingsForm() {
-    // Reset cards to default inactive
-    $$('.provider-card').forEach(c => {
-        c.classList.remove('active');
-    });
+    $$('.provider-card').forEach(c => c.classList.remove('active'));
     $$('.provider-status-badge').forEach(b => {
         b.textContent = 'Inattivo';
         b.className = 'provider-status-badge inactive';
     });
-    $$('.btn-delete-provider').forEach(b => {
-        b.classList.add('hidden');
-    });
+    $$('.btn-delete-provider').forEach(b => b.classList.add('hidden'));
 
-    // Svuota davvero i campi (non solo il placeholder): senza questo, la
-    // chiave API digitata da un utente resta nel DOM e viene mostrata anche
-    // al prossimo utente che accede dallo stesso dispositivo/tab.
-    [dom.openaiApiKey, dom.anthropicApiKey, dom.geminiApiKey].forEach(input => {
-        input.value = '';
-        input.placeholder = 'Inserisci API Key...';
-    });
-    [dom.openaiBaseUrl, dom.anthropicBaseUrl, dom.geminiBaseUrl].forEach(input => {
-        input.value = '';
-    });
-    [dom.openaiModel, dom.anthropicModel, dom.geminiModel].forEach(select => {
-        select.selectedIndex = 0;
-    });
+    // Svuotare davvero i campi: una chiave lasciata nel DOM resterebbe
+    // visibile al prossimo utente che accede dallo stesso browser.
+    [dom.openaiApiKey, dom.anthropicApiKey, dom.geminiApiKey].forEach(input => { input.value = ''; });
+    [dom.openaiBaseUrl, dom.anthropicBaseUrl, dom.geminiBaseUrl].forEach(input => { input.value = ''; });
+    [dom.openaiModel, dom.anthropicModel, dom.geminiModel].forEach(select => { select.selectedIndex = 0; });
 }
 
 function renderLLMSettings() {
     resetLLMSettingsForm();
 
-    // Popola in base alle impostazioni salvate
     state.llmSettings.forEach(s => {
         const prov = s.provider;
         const card = $(`#card-${prov}`);
         const badge = $(`#${prov}-status-badge`);
         const delBtn = $(`#${prov}-delete-btn`);
-        
-        if (card) {
-            if (s.is_active) {
-                card.classList.add('active');
-                badge.textContent = 'Attivo';
-                badge.className = 'provider-status-badge active';
-            }
-            delBtn.classList.remove('hidden');
-            
-            if (prov === 'openai') {
-                if (s.has_api_key) dom.openaiApiKey.value = '••••••••';
-                dom.openaiBaseUrl.value = s.base_url || '';
-                dom.openaiModel.value = s.model || 'gpt-5.6-terra';
-            } else if (prov === 'anthropic') {
-                if (s.has_api_key) dom.anthropicApiKey.value = '••••••••';
-                dom.anthropicBaseUrl.value = s.base_url || '';
-                dom.anthropicModel.value = s.model || 'claude-opus-4.8';
-            } else if (prov === 'gemini') {
-                if (s.has_api_key) dom.geminiApiKey.value = '••••••••';
-                dom.geminiBaseUrl.value = s.base_url || '';
-                dom.geminiModel.value = s.model || 'gemini-3.1-pro';
-            }
+        if (!card) return;
+
+        if (s.is_active) {
+            card.classList.add('active');
+            badge.textContent = 'Attivo';
+            badge.className = 'provider-status-badge active';
         }
+        delBtn.classList.remove('hidden');
+
+        const fields = {
+            openai: [dom.openaiApiKey, dom.openaiBaseUrl, dom.openaiModel],
+            anthropic: [dom.anthropicApiKey, dom.anthropicBaseUrl, dom.anthropicModel],
+            gemini: [dom.geminiApiKey, dom.geminiBaseUrl, dom.geminiModel],
+        }[prov];
+        if (!fields) return;
+
+        const [keyEl, urlEl, modelEl] = fields;
+        if (s.has_api_key) keyEl.value = '••••••••••••';
+        urlEl.value = s.base_url || '';
+        if (s.model) modelEl.value = s.model;
     });
 }
 
 async function saveProviderSettings(provider) {
-    let payload = {
-        provider: provider,
-        is_active: true // Salva ed attiva come attivo
+    const fields = {
+        openai: [dom.openaiApiKey, dom.openaiBaseUrl, dom.openaiModel],
+        anthropic: [dom.anthropicApiKey, dom.anthropicBaseUrl, dom.anthropicModel],
+        gemini: [dom.geminiApiKey, dom.geminiBaseUrl, dom.geminiModel],
+    }[provider];
+    if (!fields) return;
+
+    const [keyEl, urlEl, modelEl] = fields;
+    const payload = {
+        provider,
+        is_active: true,
+        api_key: keyEl.value.trim(),
+        base_url: urlEl.value.trim() || null,
+        model: modelEl.value,
     };
-    
+
     const saveBtn = $(`.btn-save-provider[data-provider="${provider}"]`);
     const originalText = saveBtn.textContent;
     saveBtn.disabled = true;
-    saveBtn.innerHTML = '<span class="spinner"></span> Validazione...';
-    
-    if (provider === 'openai') {
-        payload.api_key = dom.openaiApiKey.value.trim();
-        payload.base_url = dom.openaiBaseUrl.value.trim() || null;
-        payload.model = dom.openaiModel.value;
-    } else if (provider === 'anthropic') {
-        payload.api_key = dom.anthropicApiKey.value.trim();
-        payload.base_url = dom.anthropicBaseUrl.value.trim() || null;
-        payload.model = dom.anthropicModel.value;
-    } else if (provider === 'gemini') {
-        payload.api_key = dom.geminiApiKey.value.trim();
-        payload.base_url = dom.geminiBaseUrl.value.trim() || null;
-        payload.model = dom.geminiModel.value;
-    }
-    
+    saveBtn.innerHTML = '<span class="spinner"></span> Verifica…';
+
     try {
-        const res = await apiFetch('/v1/settings/llm', {
-            method: 'POST',
-            body: JSON.stringify(payload)
-        });
-        
-        showToast(`Provider ${provider.toUpperCase()} salvato ed attivato!`, 'success');
-        
-        // Reload all settings
+        await apiFetch('/v1/settings/llm', { method: 'POST', body: JSON.stringify(payload) });
+        showToast(`${provider.toUpperCase()} attivato.`, 'success');
         await loadLLMSettings();
     } catch (err) {
-        showToast(`Impossibile attivare ${provider.toUpperCase()}: ${err.message}`, 'error');
+        showToast(`${provider.toUpperCase()} non attivato: ${err.message}`, 'error');
     } finally {
         saveBtn.disabled = false;
         saveBtn.textContent = originalText;
@@ -1204,7 +1623,7 @@ async function saveProviderSettings(provider) {
 async function deleteProviderSettings(provider) {
     const ok = await confirmModal({
         title: 'Eliminare la configurazione?',
-        message: `La configurazione salvata per ${provider.toUpperCase()} verrà eliminata in modo permanente.`,
+        message: `La chiave salvata per ${provider.toUpperCase()} viene eliminata. Le risposte passeranno a un altro provider attivo.`,
         confirmLabel: 'Elimina',
         danger: true,
     });
@@ -1212,60 +1631,28 @@ async function deleteProviderSettings(provider) {
 
     try {
         await apiFetch(`/v1/settings/llm/${provider}`, { method: 'DELETE' });
-        
-        // Svuota i campi grafici
-        if (provider === 'openai') {
-            dom.openaiApiKey.value = '';
-            dom.openaiBaseUrl.value = '';
-        } else if (provider === 'anthropic') {
-            dom.anthropicApiKey.value = '';
-            dom.anthropicBaseUrl.value = '';
-        } else if (provider === 'gemini') {
-            dom.geminiApiKey.value = '';
-            dom.geminiBaseUrl.value = '';
-        }
-        
-        showToast(`Configurazione ${provider.toUpperCase()} eliminata`, 'info');
+        showToast(`Configurazione ${provider.toUpperCase()} eliminata.`, 'info');
         await loadLLMSettings();
     } catch (err) {
-        showToast('Errore durante la cancellazione delle impostazioni', 'error');
+        showToast('Eliminazione non riuscita.', 'error');
     }
 }
 
 
-
 // ============================================================
-// SIDEBAR MOBILE
-// ============================================================
-function toggleSidebar() {
-    dom.sidebar.classList.toggle('open');
-    dom.mobileOverlay.classList.toggle('active');
-}
-
-function closeSidebar() {
-    dom.sidebar.classList.remove('open');
-    dom.mobileOverlay.classList.remove('active');
-}
-
-
-// ============================================================
-// TOAST NOTIFICATIONS
+// TOAST
 // ============================================================
 function showToast(message, type = 'info') {
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
     toast.textContent = message;
-
     dom.toastContainer.appendChild(toast);
-
-    setTimeout(() => {
-        toast.remove();
-    }, 4000);
+    setTimeout(() => toast.remove(), 4200);
 }
 
 
 // ============================================================
-// MODAL (sostituisce alert/prompt/confirm nativi del browser)
+// MODALI
 // ============================================================
 const modalRoot = $('#modal-root');
 
@@ -1288,20 +1675,16 @@ function openModal({ title, bodyHtml, buttons, initialFocusSelector }) {
                 <div class="modal-header"><h3>${escapeHtml(title)}</h3></div>
                 <div class="modal-body">${bodyHtml}</div>
                 <div class="modal-footer">${buttonsHtml}</div>
-            </div>
-        `;
+            </div>`;
 
-        const settle = (value) => {
-            closeModal(overlay);
-            resolve(value);
-        };
+        const settle = (value) => { closeModal(overlay); resolve(value); };
 
         overlay.addEventListener('click', (e) => {
             if (e.target === overlay) settle(buttons.find(b => b.isCancel)?.value ?? null);
         });
 
         buttons.forEach((b, i) => {
-            overlay.querySelector(`[data-action="${i}"]`).addEventListener('click', () => {
+            $(`[data-action="${i}"]`, overlay).addEventListener('click', () => {
                 settle(typeof b.value === 'function' ? b.value(overlay) : b.value);
             });
         });
@@ -1317,10 +1700,9 @@ function openModal({ title, bodyHtml, buttons, initialFocusSelector }) {
         document.addEventListener('keydown', onKeydown);
 
         modalRoot.appendChild(overlay);
-
         const toFocus = initialFocusSelector
-            ? overlay.querySelector(initialFocusSelector)
-            : overlay.querySelector('.modal-footer button');
+            ? $(initialFocusSelector, overlay)
+            : $('.modal-footer button', overlay);
         toFocus?.focus();
     });
 }
@@ -1330,7 +1712,7 @@ function confirmModal({ title, message, confirmLabel = 'Conferma', danger = fals
         title,
         bodyHtml: `<p>${escapeHtml(message)}</p>`,
         buttons: [
-            { label: 'Annulla', className: 'btn-secondary', value: false, isCancel: true },
+            { label: 'Annulla', className: 'btn-ghost', value: false, isCancel: true },
             { label: confirmLabel, className: danger ? 'btn-danger' : 'btn-primary', value: true, isPrimary: true },
         ],
     });
@@ -1341,15 +1723,14 @@ function promptModal({ title, label, defaultValue = '', confirmLabel = 'Salva' }
         title,
         bodyHtml: `
             <label class="form-label" for="modal-prompt-input">${escapeHtml(label)}</label>
-            <input type="text" id="modal-prompt-input" class="form-input" value="${escapeHtml(defaultValue)}">
-        `,
+            <input type="text" id="modal-prompt-input" class="form-input" value="${escapeHtml(defaultValue)}">`,
         buttons: [
-            { label: 'Annulla', className: 'btn-secondary', value: null, isCancel: true },
+            { label: 'Annulla', className: 'btn-ghost', value: null, isCancel: true },
             {
                 label: confirmLabel,
                 className: 'btn-primary',
                 isPrimary: true,
-                value: (overlay) => overlay.querySelector('#modal-prompt-input').value.trim(),
+                value: (overlay) => $('#modal-prompt-input', overlay).value.trim(),
             },
         ],
         initialFocusSelector: '#modal-prompt-input',
@@ -1358,32 +1739,27 @@ function promptModal({ title, label, defaultValue = '', confirmLabel = 'Salva' }
 
 
 // ============================================================
-// API HELPER
+// API
 // ============================================================
 async function apiFetch(endpoint, options = {}) {
-    const headers = {
-        'Authorization': `Bearer ${state.token}`,
-    };
-    
-    if (!options.rawBody && options.body && typeof options.body === 'string') {
+    const headers = { 'Authorization': `Bearer ${state.token}` };
+    if (options.body && typeof options.body === 'string') {
         headers['Content-Type'] = 'application/json';
     }
-    
+
     const res = await fetch(`${API_URL}${endpoint}`, {
         ...options,
         headers: { ...headers, ...options.headers },
     });
-    
+
     if (res.status === 401) {
         handleLogout();
-        showToast('Sessione scaduta, effettua nuovamente il login', 'error');
+        showToast('Sessione scaduta. Accedi di nuovo.', 'error');
         throw new Error('Unauthorized');
     }
-    
     if (!res.ok) {
-        const errDetail = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
-        throw new Error(errDetail.detail || `HTTP ${res.status}`);
+        const errDetail = await res.json().catch(() => ({ detail: `Errore ${res.status}` }));
+        throw new Error(errDetail.detail || `Errore ${res.status}`);
     }
-    
     return res;
 }

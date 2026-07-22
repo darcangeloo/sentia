@@ -99,6 +99,24 @@ class Settings(BaseSettings):
     # === Upload ===
     MAX_UPLOAD_SIZE_MB: int = 25
 
+    # === Storage documenti ===
+    # Se SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY sono valorizzate, i PDF
+    # vivono nel bucket privato; altrimenti si resta sul filesystem locale.
+    # Il fallback non è una comodità: su un'istanza con disco effimero
+    # (Render senza persistent disk) il file sparisce a ogni redeploy, e
+    # senza questo interruttore lo sviluppo in locale richiederebbe
+    # comunque credenziali di produzione.
+    SUPABASE_URL: str = ""
+    SUPABASE_SERVICE_ROLE_KEY: str = ""
+    SUPABASE_STORAGE_BUCKET: str = "sentia-documents"
+    # Durata del link di download firmato. Breve: serve solo a coprire il
+    # tempo fra il click e l'inizio del trasferimento.
+    SIGNED_URL_TTL_SECONDS: int = 120
+
+    @property
+    def storage_remote_enabled(self) -> bool:
+        return bool(self.SUPABASE_URL and self.SUPABASE_SERVICE_ROLE_KEY)
+
     # === Rate Limiting (login) ===
     LOGIN_RATE_LIMIT_ATTEMPTS: int = 5
     LOGIN_RATE_LIMIT_WINDOW_SECONDS: int = 300

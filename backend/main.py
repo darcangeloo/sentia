@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import text as sqlalchemy_text
@@ -27,6 +27,7 @@ from backend.auth import create_access_token, verify_password, get_current_tenan
 from backend.rag import process_pdf_and_chunk, run_rag_pipeline, run_rag_pipeline_stream
 from backend.config import get_settings
 from backend.llm import validate_credentials
+from backend import storage
 
 # === Configurazione Logging ===
 settings = get_settings()
@@ -219,6 +220,28 @@ def _sanitize_filename(filename: str) -> str:
 
 
 # --- Gestione Documenti ---
+async def _index_document(local_path: str, company_id: str, doc_id: str, cleanup: bool):
+    """Indicizza il PDF e, se era solo materiale di lavorazione, lo rimuove.
+
+    La pipeline RAG continua a ricevere un percorso su disco: non sa nulla
+    di dove il documento sia archiviato, ed è giusto così.
+    """
+    try:
+        await process_pdf_and_chunk(local_path, company_id, doc_id)
+    finally:
+        if cleanup and os.path.exists(local_path):
+            try:
+                os.remove(local_path)
+            except OSError as e:
+                logger.warning(f"File di lavorazione {local_path} non rimosso: {e}")
+
+
+async def _reindex_document(storage_path: str, company_id: str, doc_id: str):
+    """Reindicizza partendo dall'archivio: scarica una copia se è remoto."""
+    async with storage.local_copy(storage_path) as local_path:
+        await process_pdf_and_chunk(local_path, company_id, doc_id)
+
+
 @app.post("/v1/documents/upload")
 async def document_upload(
     background_tasks: BackgroundTasks,
@@ -298,21 +321,45 @@ async def document_upload(
             "document_id": str(duplicate.id),
         }
 
+    # Il file appena scritto è materiale di lavorazione: serve per validare,
+    # calcolare l'hash e — subito dopo — indicizzare. La copia definitiva va
+    # nel bucket privato, se configurato.
+    stored_path = file_path
+    cleanup_local = False
+
+    if settings.storage_remote_enabled:
+        object_key = storage.build_object_key(tenant["company_id"], str(doc_id), safe_filename)
+        try:
+            stored_path = await storage.upload_file(file_path, object_key)
+            cleanup_local = True
+        except storage.StorageError as e:
+            # Meglio fallire l'upload che archiviare su un disco effimero
+            # facendo credere all'utente che il documento sia al sicuro.
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            logger.error(f"Storage remoto non raggiungibile, upload rifiutato: {e}")
+            raise HTTPException(
+                status_code=502,
+                detail="Archiviazione non raggiungibile. Riprova fra poco."
+            )
+
     doc_rec = Document(
         id=doc_id,
         company_id=uuid.UUID(tenant["company_id"]),
         filename=safe_filename,
-        storage_path=file_path,
+        storage_path=stored_path,
         status="processing",
         content_hash=content_hash,
     )
     db.add(doc_rec)
     await db.commit()
-    
+
     # Processa il chunking e gli embeddings in background
     # NOTA: NON passiamo la sessione DB — il task ne crea una propria
-    background_tasks.add_task(process_pdf_and_chunk, file_path, tenant["company_id"], str(doc_id))
-    
+    background_tasks.add_task(
+        _index_document, file_path, tenant["company_id"], str(doc_id), cleanup_local
+    )
+
     logger.info(f"Documento {file.filename} caricato (id={doc_id}), indicizzazione avviata")
     return {
         "status": "success", 
@@ -364,6 +411,50 @@ async def get_document_status(doc_id: str, tenant: dict = Depends(get_current_te
     }
 
 
+@app.get("/v1/documents/{doc_id}/download")
+async def download_document(doc_id: str, tenant: dict = Depends(get_current_tenant), db: AsyncSession = Depends(get_db)):
+    """Restituisce il PDF originale.
+
+    Il file sta sul filesystem in ./storage/company_<id>/documents/. Il
+    filtro sul company_id è lo stesso degli altri endpoint documento: un
+    doc_id di un'altra azienda non risolve, quindi risponde 404 e non
+    espone l'esistenza del documento.
+    """
+    result = await db.execute(
+        select(Document).filter(
+            Document.id == uuid.UUID(doc_id),
+            Document.company_id == uuid.UUID(tenant["company_id"])
+        )
+    )
+    doc = result.scalars().first()
+
+    if not doc:
+        raise HTTPException(status_code=404, detail="Documento non trovato")
+
+    # Oggetto nel bucket privato: si restituisce una URL firmata a breve
+    # scadenza. Il file va da Supabase al browser senza passare da qui.
+    if storage.is_remote(doc.storage_path):
+        try:
+            signed = await storage.create_signed_url(doc.storage_path, download_name=doc.filename)
+        except (storage.StorageError, storage.StorageNotConfigured) as e:
+            logger.error(f"Firma URL fallita per il documento {doc_id}: {e}")
+            raise HTTPException(status_code=502, detail="Archiviazione non raggiungibile. Riprova fra poco.")
+        return {"url": signed, "filename": doc.filename, "expires_in": settings.SIGNED_URL_TTL_SECONDS}
+
+    # Documenti caricati prima della migrazione: ancora su disco.
+    if not doc.storage_path or not os.path.exists(doc.storage_path):
+        raise HTTPException(
+            status_code=410,
+            detail="Il file originale non è più disponibile sul server. Le sezioni indicizzate restano consultabili."
+        )
+
+    return FileResponse(
+        path=doc.storage_path,
+        media_type="application/pdf",
+        filename=doc.filename,
+    )
+
+
 @app.delete("/v1/documents/{doc_id}")
 async def delete_document(doc_id: str, tenant: dict = Depends(get_current_tenant), db: AsyncSession = Depends(get_db)):
     """Elimina un documento, i suoi chunks vettoriali e il file fisico."""
@@ -384,10 +475,13 @@ async def delete_document(doc_id: str, tenant: dict = Depends(get_current_tenant
         {"doc_id": doc_id}
     )
     
-    # Elimina il file fisico
-    if doc.storage_path and os.path.exists(doc.storage_path):
+    # Elimina il file, dovunque sia archiviato
+    if storage.is_remote(doc.storage_path):
+        await storage.delete_file(doc.storage_path)
+    elif doc.storage_path and os.path.exists(doc.storage_path):
         os.remove(doc.storage_path)
-        
+
+
     await db.delete(doc)
     await db.commit()
     
@@ -420,7 +514,7 @@ async def reindex_document(
     if not doc:
         raise HTTPException(status_code=404, detail="Documento non trovato")
 
-    if not doc.storage_path or not os.path.exists(doc.storage_path):
+    if not doc.storage_path or (not storage.is_remote(doc.storage_path) and not os.path.exists(doc.storage_path)):
         raise HTTPException(
             status_code=409,
             detail="Il file originale non è più disponibile: elimina e ricarica il documento."
@@ -441,7 +535,7 @@ async def reindex_document(
     )
     await db.commit()
 
-    background_tasks.add_task(process_pdf_and_chunk, doc.storage_path, tenant["company_id"], doc_id)
+    background_tasks.add_task(_reindex_document, doc.storage_path, tenant["company_id"], doc_id)
 
     logger.info(f"Reindicizzazione avviata per documento {doc_id}")
     return {
