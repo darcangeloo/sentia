@@ -314,6 +314,19 @@ async def _run_initial_import(db: AsyncSession, account: EmailAccount):
     await db.commit()
     logger.info(f"Import iniziale Outlook completato per l'azienda {account.company_id}: {imported} email indicizzate su {seen} esaminate")
 
+    if seen == 0:
+        # Inbox vuota secondo Graph ma l'utente si aspetta delle email:
+        # logga le cartelle con i conteggi per capire dove stanno davvero
+        # (es. messaggi archiviati, o account diverso nel client Outlook).
+        try:
+            folders = await outlook.list_mail_folders(access_token)
+            summary = ", ".join(
+                f"{f.get('displayName')}={f.get('totalItemCount', 0)}" for f in folders
+            )
+            logger.info(f"Cartelle mailbox {account.email_address}: {summary or 'nessuna'}")
+        except outlook.OutlookError as e:
+            logger.warning(f"Elenco cartelle non disponibile: {e}")
+
 
 async def _run_incremental_sync(db: AsyncSession, account: EmailAccount):
     """Sync incrementale via delta query sull'inbox.

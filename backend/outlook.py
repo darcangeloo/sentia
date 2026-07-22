@@ -177,6 +177,13 @@ async def delta_messages_page(access_token: str, url: str | None = None) -> dict
     )
 
 
+async def list_mail_folders(access_token: str) -> list[dict]:
+    """Cartelle della mailbox con conteggio messaggi (diagnostica sync)."""
+    params = urlencode({"$select": "displayName,totalItemCount", "$top": "50"})
+    data = await _graph_get(access_token, f"{GRAPH_BASE_URL}/me/mailFolders?{params}")
+    return data.get("value", [])
+
+
 async def list_attachments(access_token: str, message_id: str) -> list[dict]:
     """Allegati di un messaggio. Solo metadati + contentBytes (base64)."""
     data = await _graph_get(
