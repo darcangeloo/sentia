@@ -19,8 +19,18 @@ import re
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.llm import generate_raw_async
+from backend.config import get_settings
+from backend.cache import TTLCache
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
+
+# Cache dell'analisi del router. L'intent e le entità dipendono solo dal testo
+# della domanda (il prompt di estrazione non riceve i documenti del tenant),
+# quindi la stessa domanda produce lo stesso esito per chiunque: cacheabile in
+# sicurezza fra utenti. Evita di ripagare la chiamata LLM di estrazione entità
+# per domande esaustive ripetute.
+_router_cache = TTLCache(maxsize=settings.ROUTER_CACHE_SIZE, ttl=settings.ROUTER_CACHE_TTL)
 
 # Marcatori italiani di esaustività. Usati come primo stadio: se nessuno
 # compare nella domanda, non spendiamo una chiamata LLM per classificarla.
@@ -161,6 +171,13 @@ async def analyze_query(
     if not _looks_exhaustive(user_query):
         return fallback
 
+    # Solo il percorso esaustivo/broad costa una chiamata LLM: è questo che
+    # vale la pena cacheare. Chiave = domanda normalizzata.
+    cache_key = " ".join(user_query.split()).casefold()
+    cached = _router_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     try:
         raw = await generate_raw_async(
             system=_ENTITY_EXTRACTION_SYSTEM,
@@ -187,13 +204,15 @@ async def analyze_query(
         # bene: un totale calcolato su una parte dei movimenti è sbagliato e
         # sembra giusto. Si usa il percorso standard con contesto allargato.
         logger.info("Router: intent=broad (query di sintesi senza entità identificabili)")
-        return {
+        broad_result = {
             "intent": "broad",
             "search_terms": [],
             "record_type": parsed.get("record_type"),
             "date_from": parsed.get("date_from"),
             "date_to": parsed.get("date_to"),
         }
+        _router_cache.set(cache_key, broad_result)
+        return broad_result
 
     result = {
         "intent": "exhaustive",
@@ -206,4 +225,5 @@ async def analyze_query(
         f"Router: intent=exhaustive, record_type={result['record_type']}, "
         f"termini di ricerca={search_terms}"
     )
+    _router_cache.set(cache_key, result)
     return result

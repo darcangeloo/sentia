@@ -21,6 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.config import get_settings
 from backend.llm import EXTRACTION_SYSTEM_PROMPT, generate_raw_async
 from backend.query_router import parse_json_response
+from backend.tokens import batch_by_char_budget
+from backend.sanitize import neutralize_injection
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -244,11 +246,17 @@ def prefilter_chunks(rows: list, search_terms: list[str]) -> list:
 
 
 def _format_batch(rows: list) -> str:
-    """Prepara i frammenti di un batch per il prompt."""
+    """Prepara i frammenti di un batch per il prompt.
+
+    Il testo dei frammenti proviene da PDF caricati dagli utenti: viene
+    neutralizzato (defense-in-depth contro la prompt injection indiretta) senza
+    alterare numeri, date o importi, che sono ciò che l'estrattore deve leggere.
+    """
     parts = []
     for row in rows:
+        safe_text = neutralize_injection(row["text"])
         parts.append(
-            f"--- [{row['filename']} | pagina {row['page_number']}] ---\n{row['text']}"
+            f"--- [{row['filename']} | pagina {row['page_number']}] ---\n{safe_text}"
         )
     return "\n\n".join(parts)
 
@@ -309,8 +317,16 @@ async def extract_records(
         Dict con 'records' (deduplicati e ordinati), 'total' (Decimal o None),
         'failed_batches' e 'total_batches'.
     """
-    batch_size = settings.EXTRACTION_BATCH_SIZE
-    batches = [rows[i:i + batch_size] for i in range(0, len(rows), batch_size)]
+    # Batch limitati sia per numero di chunk sia per caratteri totali: un
+    # batch a solo numero fisso può sforare la finestra di contesto quando i
+    # chunk sono lunghi (tabelle), causando errori o troncamenti lato provider.
+    # Chiudendo il batch al primo dei due limiti ogni chiamata resta di
+    # dimensione prevedibile — utile anche per contenere il costo.
+    batches = batch_by_char_budget(
+        rows,
+        max_chars=settings.EXTRACTION_MAX_BATCH_CHARS,
+        max_items=settings.EXTRACTION_BATCH_SIZE,
+    )
     logger.info(f"Estrazione: {len(rows)} chunk in {len(batches)} batch")
 
     date_filter = ""

@@ -11,6 +11,8 @@ from backend.database import AsyncSessionLocal, ChatMessage
 from backend.config import get_settings
 from backend.query_router import analyze_query
 from backend.extraction import extract_records, prefilter_chunks, render_answer, verify_arithmetic
+from backend.tokens import estimate_tokens
+from backend.sanitize import wrap_context
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 logger = logging.getLogger(__name__)
@@ -480,7 +482,7 @@ async def process_pdf_and_chunk(file_path: str, company_id: str, doc_id: str):
             # === FASE 3: Embedding via Google Gemini Embedding API ===
             # BATCH_SIZE qui limita la concorrenza lato nostro; il vero rate
             # limiting verso Gemini è gestito dal semaforo dentro embeddings.py.
-            BATCH_SIZE = 32
+            BATCH_SIZE = settings.EMBEDDING_BATCH_SIZE
             all_texts = [c["text"] for c in chunks_with_metadata]
             all_vectors = []
             total_batches = (len(all_texts) - 1) // BATCH_SIZE + 1
@@ -681,7 +683,7 @@ async def _retrieve_exhaustive(tenant: dict, search_terms: list[str], db: AsyncS
     return rows, truncated
 
 
-def _build_context_and_sources(rows, keep_all: bool = False):
+def _build_context_and_sources(rows, keep_all: bool = False, max_context_tokens: int | None = None):
     """Filtra per soglia di rilevanza e costruisce contesto + fonti da mostrare in UI.
 
     Con keep_all il filtro è disattivato: nelle domande di sintesi ogni chunk
@@ -692,19 +694,36 @@ def _build_context_and_sources(rows, keep_all: bool = False):
     rrf_score serve solo per l'ordinamento interno, il similarity_score resta
     il numero interpretabile mostrato all'utente.
 
-    La soglia è **relativa** oltre che assoluta: si scartano i chunk sotto il
-    60% del punteggio migliore. Una soglia puramente assoluta è inservibile
-    perché il livello di similarità dipende molto dal tipo di domanda — su
-    una domanda difficile taglierebbe anche i chunk corretti.
-    """
-    context_segments = []
-    sources = []
+    La soglia è **relativa** oltre che assoluta: si scartano i chunk sotto una
+    frazione (SIMILARITY_RELATIVE_FACTOR) del punteggio migliore. Una soglia
+    puramente assoluta è inservibile perché il livello di similarità dipende
+    molto dal tipo di domanda — su una domanda difficile taglierebbe anche i
+    chunk corretti.
 
+    Oltre al filtro di rilevanza si applica un **budget in token**
+    (max_context_tokens): i chunk arrivano ordinati per rilevanza, quindi al
+    superamento del budget si tagliano i meno rilevanti. Serve a contenere il
+    costo della chiamata LLM e a non sforare la finestra di contesto del
+    provider. Il flag `truncated` segnala che il taglio è avvenuto.
+
+    Returns:
+        (context, sources, truncated)
+    """
     if keep_all:
         cutoff = 0.0
     else:
         scores = [row[5] for row in rows if row[5] is not None]
-        cutoff = max(settings.SIMILARITY_THRESHOLD, max(scores) * 0.6) if scores else 0.0
+        cutoff = (
+            max(settings.SIMILARITY_THRESHOLD, max(scores) * settings.SIMILARITY_RELATIVE_FACTOR)
+            if scores else 0.0
+        )
+
+    budget = max_context_tokens if max_context_tokens is not None else settings.MAX_CONTEXT_TOKENS
+
+    context_segments = []
+    sources = []
+    used_tokens = 0
+    truncated = False
 
     for row in rows:
         text, page_number, chunk_index, filename, rrf_score, score = row
@@ -713,6 +732,14 @@ def _build_context_and_sources(rows, keep_all: bool = False):
             logger.debug(f"Chunk scartato (score {score:.3f} < {cutoff:.3f}): {text[:50]}...")
             continue
 
+        # Budget di token: valutato in lockstep con le fonti così contesto e
+        # sources restano allineati. Il primo chunk si tiene sempre.
+        cost = estimate_tokens(text) + (2 if context_segments else 0)
+        if context_segments and budget > 0 and used_tokens + cost > budget:
+            truncated = True
+            break
+
+        used_tokens += cost
         context_segments.append(text)
         sources.append({
             "filename": filename,
@@ -721,8 +748,17 @@ def _build_context_and_sources(rows, keep_all: bool = False):
             "relevance_score": round(score, 3) if score is not None else None,
         })
 
-    context = "\n---\n".join(context_segments)
-    return context, sources
+    if truncated:
+        logger.info(
+            f"Contesto troncato al budget di {budget} token: "
+            f"{len(context_segments)}/{len(rows)} chunk inclusi"
+        )
+
+    # Difesa contro la prompt injection indiretta: il contenuto dei documenti
+    # è dato non fidato, va delimitato e neutralizzato prima di entrare nel
+    # prompt (vedi backend/sanitize.py).
+    context = wrap_context("\n---\n".join(context_segments))
+    return context, sources, truncated
 
 
 def _exhaustive_sources(rows, record_documents: set[str] | None = None) -> list[dict]:
@@ -848,7 +884,11 @@ async def run_rag_pipeline(tenant: dict, user_query: str, db: AsyncSession) -> d
             "sources": []
         }
 
-    context, sources = _build_context_and_sources(rows, keep_all=broad)
+    context, sources, _ = _build_context_and_sources(
+        rows,
+        keep_all=broad,
+        max_context_tokens=settings.BROAD_MAX_CONTEXT_TOKENS if broad else settings.MAX_CONTEXT_TOKENS,
+    )
     answer = verify_arithmetic(await generate_answer_async(user_query, context, history, tenant, db))
 
     logger.info(
@@ -898,7 +938,11 @@ async def run_rag_pipeline_stream(tenant: dict, user_query: str, db: AsyncSessio
             yield {"type": "done"}
             return
 
-        context, sources = _build_context_and_sources(rows, keep_all=broad)
+        context, sources, _ = _build_context_and_sources(
+            rows,
+            keep_all=broad,
+            max_context_tokens=settings.BROAD_MAX_CONTEXT_TOKENS if broad else settings.MAX_CONTEXT_TOKENS,
+        )
 
         yield {"type": "sources", "data": sources}
 

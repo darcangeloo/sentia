@@ -7,11 +7,22 @@ from google.genai import types
 from google.genai.errors import APIError
 
 from backend.config import get_settings
+from backend.cache import TTLCache, cached_call
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
 _client = None
+
+# Cache degli embedding delle DOMANDE. Solo get_embedding_async (usata per le
+# query in fase di retrieval) vi attinge; l'embedding dei chunk in ingestion
+# usa get_embeddings_batch_async e NON è cacheato (ogni chunk è unico, cacharlo
+# sprecherebbe memoria). Una domanda identica ripetuta — anche da utenti
+# diversi della stessa azienda — riusa l'embedding invece di ripagarlo.
+_query_embedding_cache = TTLCache(
+    maxsize=settings.QUERY_EMBEDDING_CACHE_SIZE,
+    ttl=settings.QUERY_EMBEDDING_CACHE_TTL,
+)
 
 # Limita le chiamate concorrenti verso l'API Gemini durante il batch
 # embedding: senza questo semaforo, un documento con centinaia di chunk
@@ -68,9 +79,18 @@ def get_embedding(text: str, max_retries: int = 6) -> list[float]:
 
 
 async def get_embedding_async(text: str):
-    return await asyncio.to_thread(
-        get_embedding,
-        text
+    """Embedding di una singola query, con cache in-process.
+
+    La chiave è il testo normalizzato (spazi collassati, minuscolo): domande
+    equivalenti a meno di spaziatura/maiuscole condividono l'embedding. Il
+    modello Gemini è comunque poco sensibile alla capitalizzazione, quindi la
+    normalizzazione non degrada il retrieval e aumenta gli hit di cache.
+    """
+    cache_key = " ".join((text or "").split()).casefold()
+    return await cached_call(
+        _query_embedding_cache,
+        cache_key,
+        lambda: asyncio.to_thread(get_embedding, text),
     )
 
 
