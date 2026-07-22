@@ -1,0 +1,5 @@
+{"query": "qual è il saldo al 31 dicembre 2024?", "relevant": ["estratto_dicembre.pdf#saldo"]}
+{"query": "elencami tutti i pagamenti a Rossi Srl", "relevant": ["estratto_marzo.pdf#mov12", "estratto_aprile.pdf#mov3", "estratto_aprile.pdf#mov9"]}
+{"query": "quanto ho speso a gennaio?", "relevant": ["estratto_gennaio.pdf#totale", "estratto_gennaio.pdf#mov1", "estratto_gennaio.pdf#mov2"]}
+{"query": "mostrami le fatture del fornitore Bianchi", "relevant": ["fatture_2024.pdf#f101", "fatture_2024.pdf#f118"]}
+{"query": "storico dei bonifici verso Ferrari Andrea", "relevant": ["estratto_febbraio.pdf#mov7", "estratto_maggio.pdf#mov2"]}

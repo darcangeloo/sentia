@@ -28,3 +28,7 @@ python-multipart
 aiofiles
 python-dotenv
 numpy
+
+# === Test ===
+pytest
+pytest-asyncio
