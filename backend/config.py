@@ -159,6 +159,13 @@ class Settings(BaseSettings):
     # forzata su TLS anche quando la DATABASE_URL non specifica ?ssl=.
     # I provider gestiti (Supabase, Render, Neon...) lo supportano tutti.
     DB_FORCE_SSL: bool = True
+    # Verifica del certificato del server DB. Il pooler Supabase presenta una
+    # catena con root self-signed che non sta nel trust store di default:
+    # asyncpg con ssl=True (verifica piena) rifiuta la connessione e l'app non
+    # parte. Con verifica disattivata la connessione resta CIFRATA ma non
+    # autentica il certificato del server. Default False per compatibilità con
+    # il pooler Supabase; portare a True fornendo una CA affidabile.
+    DB_SSL_VERIFY: bool = False
 
     # === Rate Limiting (login) ===
     LOGIN_RATE_LIMIT_ATTEMPTS: int = 5

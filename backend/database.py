@@ -1,4 +1,5 @@
 import logging
+import ssl
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from sqlalchemy import Column, String, ForeignKey, TEXT, TIMESTAMP, LargeBinary, Integer, Index, Boolean, text as sqlalchemy_text
@@ -29,7 +30,16 @@ def _connect_args() -> dict:
         return {}
     if "ssl" in (url.query or {}):
         return {}  # la URL specifica già la propria modalità TLS
-    return {"ssl": True}
+    if settings.DB_SSL_VERIFY:
+        return {"ssl": True}  # TLS con verifica piena del certificato
+    # TLS senza verifica del certificato: la connessione è cifrata ma il
+    # certificato del server non viene autenticato. Necessario per il pooler
+    # Supabase, la cui catena ha una root self-signed non presente nel trust
+    # store di default (asyncpg con ssl=True rifiuterebbe e l'app non partirebbe).
+    ssl_ctx = ssl.create_default_context()
+    ssl_ctx.check_hostname = False
+    ssl_ctx.verify_mode = ssl.CERT_NONE
+    return {"ssl": ssl_ctx}
 
 
 engine = create_async_engine(
