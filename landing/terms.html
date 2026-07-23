@@ -27,39 +27,60 @@
 
     <main class="wrap legal">
         <h1>Terms of Use</h1>
-        <p class="legal-updated">Ultimo aggiornamento: [DATA]</p>
+        <p class="legal-updated">Ultimo aggiornamento: 23 luglio 2026</p>
 
-        <!-- Testo placeholder standard SaaS B2B: da rivedere con un legale prima della pubblicazione. -->
-
-        <h2>1. Oggetto del servizio</h2>
-        <p>Sentia (il "Servizio") è una piattaforma software in abbonamento che consente alle aziende clienti di indicizzare documenti interni e caselle di posta elettronica e di interrogarli tramite un assistente basato su intelligenza artificiale. Il Servizio è fornito da [RAGIONE SOCIALE], con sede in [INDIRIZZO], P.IVA [PARTITA IVA] (il "Fornitore").</p>
+        <h2>1. Descrizione del servizio</h2>
+        <p>Sentia (il "Servizio") è una piattaforma SaaS B2B in abbonamento che consente alle aziende di interrogare in linguaggio naturale la propria documentazione interna (email, file, contratti) tramite intelligenza artificiale, con tecnologia di ricerca ibrida (RAG) e integrazione diretta con Microsoft Outlook. Le risposte generate indicano la fonte e, ove disponibile, la pagina del documento da cui provengono.</p>
+        <p>Il Servizio è fornito da Sentia, con sede in Cerignola (FG), Italia (il "Fornitore"). Per contatti: <a href="mailto:robworkhub@gmail.com">robworkhub@gmail.com</a>.</p>
 
         <h2>2. Accettazione dei termini</h2>
-        <p>L'utilizzo del Servizio comporta l'accettazione integrale dei presenti termini. Il Servizio è riservato a soggetti che agiscono nell'esercizio della propria attività imprenditoriale o professionale (B2B).</p>
+        <p>L'utilizzo del Servizio comporta l'accettazione integrale dei presenti termini. Il Servizio è riservato a soggetti che agiscono nell'esercizio della propria attività imprenditoriale o professionale (B2B). Non è destinato a consumatori.</p>
 
-        <h2>3. Account e credenziali</h2>
-        <p>L'accesso avviene tramite credenziali aziendali. Il cliente è responsabile della custodia delle credenziali e di ogni attività svolta tramite il proprio account.</p>
+        <h2>3. Account e responsabilità dell'utente</h2>
+        <p>L'accesso avviene tramite credenziali aziendali. L'azienda cliente (il "Cliente") è responsabile della custodia delle credenziali, della veridicità dei dati forniti in fase di registrazione e di ogni attività svolta tramite i propri account.</p>
+        <p>Il Cliente è l'unico titolare e responsabile dei contenuti caricati o sincronizzati sul Servizio (documenti, email, allegati). Il Cliente garantisce di avere il diritto di caricare e trattare tali contenuti, incluse le autorizzazioni necessarie per la connessione di caselle di posta Outlook aziendali. Il Fornitore non assume alcuna titolarità né responsabilità editoriale sui contenuti del Cliente.</p>
 
-        <h2>4. Abbonamento e pagamenti</h2>
-        <p>Il Servizio è offerto in piani in abbonamento mensile, con i limiti indicati nella pagina prezzi. I pagamenti sono gestiti tramite Stripe. Il cliente può disdire in qualsiasi momento; la disdetta ha effetto al termine del periodo di fatturazione in corso.</p>
+        <h2>4. Piani, prezzi, fatturazione e cancellazione</h2>
+        <p>Il Servizio è offerto nei seguenti piani in abbonamento mensile, con prezzo per azienda, IVA esclusa:</p>
+        <ul>
+            <li><strong>Starter</strong> — 79 € / mese</li>
+            <li><strong>Business</strong> — 99 € / mese</li>
+        </ul>
+        <p>I pagamenti sono elaborati tramite Stripe, che agisce come processore di pagamento per conto del Fornitore. La fatturazione e i relativi adempimenti fiscali (inclusa l'IVA) sono gestiti direttamente dal Fornitore.</p>
+        <p>L'abbonamento si rinnova automaticamente di mese in mese al prezzo del piano attivo, salvo disdetta. Il Cliente può disdire in qualsiasi momento; la disdetta ha effetto al termine del periodo di fatturazione in corso, senza rimborso pro-rata per il periodo già pagato. Il Cliente può inoltre cambiare piano in qualsiasi momento; in caso di passaggio a un piano con limiti inferiori si applica quanto previsto alla sezione 5.</p>
+        <p>Eventuali modifiche di prezzo saranno comunicate al Cliente con ragionevole preavviso e avranno effetto dal ciclo di fatturazione successivo alla comunicazione.</p>
 
-        <h2>5. Contenuti del cliente</h2>
-        <p>I documenti e le email caricati o sincronizzati restano di proprietà del cliente. Il Fornitore li tratta esclusivamente per erogare il Servizio e non li utilizza per finalità diverse, incluso l'addestramento di modelli.</p>
+        <h2>5. Limiti di utilizzo per piano</h2>
+        <p>Ciascun piano include i seguenti limiti, applicati a livello applicativo:</p>
+        <ul>
+            <li><strong>Starter:</strong> fino a 500 documenti indicizzati, 1 casella Outlook collegata, sincronizzazione iniziale delle email limitata agli ultimi 30 giorni.</li>
+            <li><strong>Business:</strong> fino a 2.500 documenti indicizzati, fino a 3 caselle Outlook collegate, sincronizzazione iniziale delle email limitata agli ultimi 6 mesi.</li>
+        </ul>
+        <p>Le nuove email ricevute dopo la connessione della casella vengono sincronizzate in tempo reale per tutti i piani; il limite temporale riguarda esclusivamente l'importazione iniziale dello storico.</p>
+        <p>Al raggiungimento di un limite, il caricamento di nuovi documenti o la connessione di nuove caselle viene bloccata e il Cliente è invitato a passare a un piano superiore. In caso di passaggio a un piano con limiti inferiori, i contenuti già indicizzati non vengono cancellati: viene bloccata soltanto l'aggiunta di nuovi contenuti oltre il limite del nuovo piano.</p>
 
-        <h2>6. Uso consentito</h2>
-        <p>Il cliente si impegna a non utilizzare il Servizio per finalità illecite, a non caricare contenuti di cui non ha diritto di disporre e a non tentare di compromettere la sicurezza o l'integrità della piattaforma.</p>
+        <h2>6. Proprietà dei dati caricati</h2>
+        <p>I documenti e le email caricati o sincronizzati restano di esclusiva proprietà del Cliente. Il Cliente concede al Fornitore una licenza limitata, non esclusiva e revocabile a trattare tali contenuti al solo fine di erogare il Servizio (indicizzazione, ricerca, generazione di risposte). Il Fornitore non utilizza i contenuti del Cliente per finalità diverse, incluso l'addestramento di modelli di intelligenza artificiale propri o di terzi.</p>
+        <p>Per l'erogazione delle funzionalità di intelligenza artificiale, i contenuti possono essere elaborati da fornitori terzi di servizi AI, come descritto nella <a href="privacy.html">Privacy Policy</a>. Alla cessazione del contratto, i contenuti del Cliente vengono cancellati o resi anonimi secondo quanto previsto dalla Privacy Policy.</p>
 
-        <h2>7. Limitazioni di responsabilità</h2>
-        <p>Le risposte generate dal Servizio sono prodotte automaticamente a partire dai contenuti del cliente e hanno finalità di supporto: non costituiscono consulenza contabile, fiscale o legale. Il cliente è tenuto a verificare le informazioni prima di farvi affidamento. Nei limiti consentiti dalla legge, la responsabilità del Fornitore è limitata all'importo corrisposto dal cliente negli ultimi 12 mesi.</p>
+        <h2>7. Uso consentito</h2>
+        <p>Il Cliente si impegna a non utilizzare il Servizio per finalità illecite, a non caricare contenuti di cui non ha diritto di disporre, a non rivendere o concedere in sublicenza il Servizio a terzi e a non tentare di compromettere la sicurezza, l'integrità o le prestazioni della piattaforma (inclusi accessi non autorizzati, scraping sistematico o aggiramento dei limiti di piano).</p>
 
-        <h2>8. Modifiche</h2>
-        <p>Il Fornitore può aggiornare i presenti termini dandone comunicazione al cliente con ragionevole preavviso. L'uso continuato del Servizio dopo la modifica costituisce accettazione.</p>
+        <h2>8. Limitazioni di responsabilità</h2>
+        <p>Le risposte generate dal Servizio sono prodotte automaticamente a partire dai contenuti del Cliente e hanno finalità di supporto: non costituiscono consulenza contabile, fiscale o legale. Il Cliente è tenuto a verificare le informazioni prima di farvi affidamento.</p>
+        <p>Il Fornitore si impegna a mantenere il Servizio disponibile e sicuro, ma non garantisce l'assenza di interruzioni o errori. Nei limiti consentiti dalla legge, la responsabilità complessiva del Fornitore è limitata all'importo corrisposto dal Cliente nei 12 mesi precedenti l'evento che ha originato la pretesa.</p>
 
-        <h2>9. Legge applicabile e foro</h2>
-        <p>I presenti termini sono regolati dalla legge italiana. Per ogni controversia è competente in via esclusiva il Foro di [CITTÀ].</p>
+        <h2>9. Modifiche ai termini</h2>
+        <p>Il Fornitore può aggiornare i presenti termini dandone comunicazione al Cliente con ragionevole preavviso. L'uso continuato del Servizio dopo l'entrata in vigore delle modifiche costituisce accettazione. La data di ultimo aggiornamento è indicata in cima a questa pagina.</p>
 
-        <h2>10. Contatti</h2>
-        <p>Per qualsiasi domanda sui presenti termini: <a href="mailto:robworkhub@gmail.com">robworkhub@gmail.com</a>.</p>
+        <h2>10. Legge applicabile e foro competente</h2>
+        <p>I presenti termini sono regolati dalla legge italiana. Per ogni controversia è competente in via esclusiva il Foro di Foggia.</p>
+
+        <h2>11. Privacy</h2>
+        <p>Il trattamento dei dati personali connesso all'utilizzo del Servizio è descritto nella <a href="privacy.html">Privacy Policy</a>, che costituisce parte integrante dei presenti termini.</p>
+
+        <h2>12. Contatti</h2>
+        <p>Per qualsiasi domanda sui presenti termini: <a href="mailto:robworkhub@gmail.com">robworkhub@gmail.com</a> — Sentia, Cerignola (FG) 71042, Italia.</p>
     </main>
 
     <footer class="site-footer">
