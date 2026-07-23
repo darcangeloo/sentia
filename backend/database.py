@@ -45,6 +45,12 @@ def _connect_args() -> dict:
             ssl_ctx = ssl.create_default_context(cafile=cert_path)
         else:
             ssl_ctx = ssl.create_default_context()
+        # La CA Supabase (prod-ca-2021) non porta l'estensione keyUsage:
+        # l'OpenSSL recente con il check X509_STRICT attivo la rifiuta
+        # ("CA cert does not include key usage extension"). Si disattiva SOLO
+        # questo controllo pedante: verifica della catena e dell'hostname
+        # restano attive (la MITM protection non viene indebolita).
+        ssl_ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
         return {"ssl": ssl_ctx}
     # TLS senza verifica del certificato: la connessione è cifrata ma il
     # certificato del server non viene autenticato. Necessario per il pooler
