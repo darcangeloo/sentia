@@ -163,9 +163,14 @@ class Settings(BaseSettings):
     # catena con root self-signed che non sta nel trust store di default:
     # asyncpg con ssl=True (verifica piena) rifiuta la connessione e l'app non
     # parte. Con verifica disattivata la connessione resta CIFRATA ma non
-    # autentica il certificato del server. Default False per compatibilità con
-    # il pooler Supabase; portare a True fornendo una CA affidabile.
+    # autentica il certificato del server. Per la verifica piena impostare
+    # DB_SSL_VERIFY=true E fornire la CA di Supabase in DB_SSL_ROOT_CERT.
     DB_SSL_VERIFY: bool = False
+    # Percorso al certificato CA (PEM) usato per verificare il server DB quando
+    # DB_SSL_VERIFY è true. Per Supabase: Project Settings → Database → SSL
+    # Configuration → Download certificate, poi salvato nel repo. Se vuoto si
+    # usa il trust store di sistema (che NON contiene la root Supabase).
+    DB_SSL_ROOT_CERT: str = ""
 
     # === Rate Limiting (login) ===
     LOGIN_RATE_LIMIT_ATTEMPTS: int = 5

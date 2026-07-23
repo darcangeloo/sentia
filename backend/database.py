@@ -1,4 +1,5 @@
 import logging
+import os
 import ssl
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
@@ -31,7 +32,20 @@ def _connect_args() -> dict:
     if "ssl" in (url.query or {}):
         return {}  # la URL specifica già la propria modalità TLS
     if settings.DB_SSL_VERIFY:
-        return {"ssl": True}  # TLS con verifica piena del certificato
+        # TLS con verifica piena. Con una CA esplicita (DB_SSL_ROOT_CERT) si
+        # autentica la root self-signed di Supabase; senza, si ricade sul
+        # trust store di sistema (che NON contiene quella root: fallirebbe).
+        if settings.DB_SSL_ROOT_CERT:
+            cert_path = os.path.abspath(settings.DB_SSL_ROOT_CERT)
+            if not os.path.isfile(cert_path):
+                raise RuntimeError(
+                    f"DB_SSL_VERIFY attivo ma il certificato CA non esiste: {cert_path}. "
+                    f"Verifica DB_SSL_ROOT_CERT."
+                )
+            ssl_ctx = ssl.create_default_context(cafile=cert_path)
+        else:
+            ssl_ctx = ssl.create_default_context()
+        return {"ssl": ssl_ctx}
     # TLS senza verifica del certificato: la connessione è cifrata ma il
     # certificato del server non viene autenticato. Necessario per il pooler
     # Supabase, la cui catena ha una root self-signed non presente nel trust
