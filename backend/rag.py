@@ -8,6 +8,7 @@ from sqlalchemy import select, text as sqlalchemy_text
 from backend.embeddings import get_embeddings_batch_async, get_embedding_async
 from backend.llm import generate_answer_async, generate_answer_stream_async
 from backend.database import AsyncSessionLocal, ChatMessage
+from backend.crypto import decrypt_text
 from backend.config import get_settings
 from backend.query_router import analyze_query
 from backend.extraction import extract_records, prefilter_chunks, render_answer, verify_arithmetic
@@ -200,9 +201,12 @@ async def get_recent_messages(
 
     messages.reverse()
 
+    # I contenuti sono cifrati a livello colonna (backend/crypto.encrypt_text):
+    # per costruire il contesto conversazionale dell'LLM vanno decifrati qui,
+    # in memoria, senza mai persistere il chiaro.
     history = ""
     for msg in messages:
-        history += f"{msg.role}: {msg.content}\n"
+        history += f"{msg.role}: {decrypt_text(msg.content)}\n"
 
     return history
 
@@ -552,6 +556,16 @@ async def embed_and_store_chunks(
             raise
 
         all_vectors.extend(batch_vectors)
+
+    # Semantica di UPSERT a livello documento: prima dell'inserimento si
+    # eliminano gli eventuali chunk già presenti per questo documento, nella
+    # STESSA transazione. Così una ri-elaborazione (reindex, retry dopo
+    # errore, doppio task) sovrascrive gli embedding esistenti invece di
+    # accumulare duplicati nel retrieval.
+    await db.execute(
+        sqlalchemy_text("DELETE FROM chunks WHERE document_id = :doc_id"),
+        {"doc_id": doc_id},
+    )
 
     # Inserimento nel database (batch, singola round-trip).
     # text_search è una colonna generata (vedi migration.sql):

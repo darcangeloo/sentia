@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import time
 import uuid
 import asyncio
@@ -24,9 +25,18 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from pydantic import BaseModel, Field
 from backend.database import AsyncSessionLocal, Company, User, Document, ChatMessage, Conversation, UserLLMSetting, EmailAccount
-from backend.auth import create_access_token, verify_password, get_current_tenant
+from backend.auth import (
+    create_access_token,
+    verify_password,
+    hash_password,
+    get_current_tenant,
+    get_tenant_for_password_change,
+    PASSWORD_CHANGE_SCOPE,
+)
 from backend.rag import process_pdf_and_chunk, run_rag_pipeline, run_rag_pipeline_stream
 from backend.config import get_settings
+from backend.crypto import encrypt_text, decrypt_text
+from backend.audit import log_audit
 from backend.llm import validate_credentials
 from backend import storage
 
@@ -57,14 +67,26 @@ async def lifespan(app: FastAPI):
             f"Poller sync Outlook avviato (ogni {settings.OUTLOOK_SYNC_INTERVAL_MINUTES} minuti)"
         )
 
+    # Job di manutenzione: purge delle conversazioni oltre la retention e
+    # migrazione one-shot dei messaggi legacy in chiaro verso la cifratura
+    # a livello colonna. Entrambi in background, mai bloccanti per il boot.
+    from backend.maintenance import periodic_purge_loop, encrypt_legacy_chat_messages
+    purge_task = asyncio.create_task(periodic_purge_loop())
+    logger.info(
+        f"Job purge conversazioni avviato (retention {settings.CONVERSATION_RETENTION_DAYS} giorni, "
+        f"ogni {settings.CONVERSATION_PURGE_INTERVAL_HOURS} ore)"
+    )
+    legacy_encrypt_task = asyncio.create_task(encrypt_legacy_chat_messages())
+
     yield
 
-    if outlook_sync_task:
-        outlook_sync_task.cancel()
-        try:
-            await outlook_sync_task
-        except asyncio.CancelledError:
-            pass
+    for task in (outlook_sync_task, purge_task, legacy_encrypt_task):
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
     await engine.dispose()
 
 
@@ -109,6 +131,10 @@ async def security_headers_middleware(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    # HSTS: i browser che hanno già visto il dominio in HTTPS rifiuteranno
+    # qualunque downgrade a HTTP. Ignorato dai browser su connessioni HTTP,
+    # quindi innocuo in sviluppo locale.
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
 
 
@@ -169,6 +195,15 @@ class RenameConversationRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=255)
 
 
+class CompanyDataDeleteRequest(BaseModel):
+    # Conferma esplicita: una DELETE senza body corretto non cancella nulla.
+    confirm: bool = False
+
+
+class ChangePasswordRequest(BaseModel):
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
 class LLMSettingRequest(BaseModel):
     provider: str = Field(..., max_length=50)
     api_key: str | None = Field(default=None, max_length=1000)
@@ -219,8 +254,59 @@ async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends
         logger.warning(f"Tentativo di login fallito per: {form_data.username}")
         raise HTTPException(status_code=400, detail="Credenziali errate")
     
-    token = create_access_token(data={"user_id": str(user.id), "company_id": str(user.company_id)})
-    logger.info(f"Login riuscito per: {form_data.username}")
+    must_change = bool(user.must_change_password)
+    # Se la password è ancora quella provvisoria, il token rilasciato è
+    # "provvisorio" (scope=password_change): non apre nessuna operazione
+    # normale, serve solo a raggiungere /v1/auth/change-password.
+    token = create_access_token(
+        data={"user_id": str(user.id), "company_id": str(user.company_id)},
+        scope=PASSWORD_CHANGE_SCOPE if must_change else None,
+    )
+    logger.info(f"Login riuscito per: {form_data.username} (cambio password richiesto: {must_change})")
+    return {"access_token": token, "token_type": "bearer", "must_change_password": must_change}
+
+
+@app.post("/v1/auth/change-password")
+async def change_password(
+    body: ChangePasswordRequest,
+    request: Request,
+    tenant: dict = Depends(get_tenant_for_password_change),
+    db: AsyncSession = Depends(get_db),
+):
+    """Imposta una nuova password per l'utente corrente.
+
+    Chiude il flusso di primo accesso: sostituisce la password provvisoria con
+    quella scelta dal cliente (salvata solo come hash bcrypt — mai in chiaro,
+    non recuperabile da nessuno, founder incluso), azzera must_change_password
+    e rilascia un token normale con cui proseguire.
+    """
+    user_uuid = uuid.UUID(tenant["user_id"])
+    result = await db.execute(select(User).filter(User.id == user_uuid))
+    user = result.scalars().first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utente non trovato")
+
+    # La nuova password non può coincidere con quella attuale/provvisoria:
+    # cambiarla deve significare davvero cambiarla.
+    same_as_current = await asyncio.to_thread(verify_password, body.new_password, user.password_hash)
+    if same_as_current:
+        raise HTTPException(status_code=400, detail="La nuova password deve essere diversa da quella attuale.")
+
+    user.password_hash = await asyncio.to_thread(hash_password, body.new_password)
+    user.must_change_password = False
+    await db.commit()
+
+    await log_audit(
+        action="user.password_changed",
+        actor_user_id=str(user_uuid),
+        company_id=tenant["company_id"],
+        target=str(user_uuid),
+        ip_address=request.client.host if request.client else None,
+    )
+    logger.info(f"Password cambiata per l'utente {user_uuid}")
+
+    # Token normale (senza scope provvisorio): l'utente può ora usare l'app.
+    token = create_access_token(data={"user_id": tenant["user_id"], "company_id": tenant["company_id"]})
     return {"access_token": token, "token_type": "bearer"}
 
 
@@ -256,10 +342,66 @@ async def _index_document(local_path: str, company_id: str, doc_id: str, cleanup
                 logger.warning(f"File di lavorazione {local_path} non rimosso: {e}")
 
 
-async def _reindex_document(storage_path: str, company_id: str, doc_id: str):
-    """Reindicizza partendo dall'archivio: scarica una copia se è remoto."""
+async def _reindex_document(storage_path: str, company_id: str, doc_id: str, force: bool = False):
+    """Reindicizza partendo dall'archivio: scarica una copia se è remoto.
+
+    Prima di ripagare l'embedding si confronta l'hash SHA-256 del file con
+    quello salvato: se il contenuto non è cambiato e i chunk esistono già,
+    la reindicizzazione è un no-op (a meno di force=True, per rigenerare i
+    chunk dopo un cambio dei parametri di chunking).
+    """
     async with storage.local_copy(storage_path) as local_path:
+        current_hash = await asyncio.to_thread(_file_sha256, local_path)
+
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                sqlalchemy_text("SELECT content_hash FROM documents WHERE id = :doc_id"),
+                {"doc_id": doc_id},
+            )
+            row = result.first()
+            if row is None:
+                logger.info(f"Documento {doc_id} cancellato prima della reindicizzazione, salto")
+                return
+            stored_hash = row[0]
+
+            chunk_result = await db.execute(
+                sqlalchemy_text("SELECT COUNT(*) FROM chunks WHERE document_id = :doc_id"),
+                {"doc_id": doc_id},
+            )
+            existing_chunks = chunk_result.scalar() or 0
+
+            if not force and stored_hash == current_hash and existing_chunks > 0:
+                await db.execute(
+                    sqlalchemy_text(
+                        "UPDATE documents SET status = 'ready', error_message = NULL, "
+                        "chunk_count = :count WHERE id = :doc_id"
+                    ),
+                    {"doc_id": doc_id, "count": existing_chunks},
+                )
+                await db.commit()
+                logger.info(
+                    f"Reindicizzazione saltata per il documento {doc_id}: contenuto invariato "
+                    f"(hash {current_hash[:12]}…), {existing_chunks} chunk già indicizzati"
+                )
+                return
+
+            if stored_hash != current_hash:
+                await db.execute(
+                    sqlalchemy_text("UPDATE documents SET content_hash = :hash WHERE id = :doc_id"),
+                    {"doc_id": doc_id, "hash": current_hash},
+                )
+                await db.commit()
+
         await process_pdf_and_chunk(local_path, company_id, doc_id)
+
+
+def _file_sha256(path: str) -> str:
+    """SHA-256 esadecimale di un file, letto a blocchi."""
+    hasher = hashlib.sha256()
+    with open(path, "rb") as f:
+        while block := f.read(1024 * 1024):
+            hasher.update(block)
+    return hasher.hexdigest()
 
 
 @app.post("/v1/documents/upload")
@@ -522,6 +664,7 @@ async def delete_document(doc_id: str, tenant: dict = Depends(get_current_tenant
 async def reindex_document(
     doc_id: str,
     background_tasks: BackgroundTasks,
+    force: bool = False,
     tenant: dict = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db)
 ):
@@ -549,22 +692,19 @@ async def reindex_document(
             detail="Il file originale non è più disponibile: elimina e ricarica il documento."
         )
 
-    # Rimuove i chunk esistenti e riporta il documento in elaborazione: i nuovi
-    # chunk verranno inseriti dal task in background, come per un primo upload.
-    await db.execute(
-        sqlalchemy_text("DELETE FROM chunks WHERE document_id = :doc_id"),
-        {"doc_id": doc_id}
-    )
+    # I chunk esistenti NON vengono eliminati qui: se l'hash del file risulta
+    # invariato il task in background salta la reindicizzazione e i chunk
+    # restano validi. La sovrascrittura (upsert) avviene dentro
+    # embed_and_store_chunks, nella stessa transazione dell'insert.
     await db.execute(
         sqlalchemy_text(
-            "UPDATE documents SET status = 'processing', error_message = NULL, "
-            "chunk_count = 0 WHERE id = :doc_id"
+            "UPDATE documents SET status = 'processing', error_message = NULL WHERE id = :doc_id"
         ),
         {"doc_id": doc_id}
     )
     await db.commit()
 
-    background_tasks.add_task(_reindex_document, doc.storage_path, tenant["company_id"], doc_id)
+    background_tasks.add_task(_reindex_document, doc.storage_path, tenant["company_id"], doc_id, force)
 
     logger.info(f"Reindicizzazione avviata per documento {doc_id}")
     return {
@@ -608,7 +748,9 @@ async def _save_user_message_and_touch_conversation(
         company_id=company_uuid,
         conversation_id=conversation_uuid,
         role="user",
-        content=query
+        # Cifratura a livello colonna: il contenuto non è leggibile con il
+        # solo accesso al DB (vedi backend/crypto.encrypt_text).
+        content=encrypt_text(query)
     )
     db.add(user_msg)
     await db.commit()
@@ -656,7 +798,7 @@ async def chat(body: ChatRequest, tenant: dict = Depends(get_current_tenant), db
         company_id=company_uuid,
         conversation_id=conversation_uuid,
         role="assistant",
-        content=rag_response["answer"],
+        content=encrypt_text(rag_response["answer"]),
         sources_json=json.dumps(rag_response["sources"], ensure_ascii=False) if rag_response["sources"] else None
     )
     db.add(assistant_msg)
@@ -700,7 +842,7 @@ async def chat_stream(body: ChatRequest, tenant: dict = Depends(get_current_tena
                         company_id=company_uuid,
                         conversation_id=conversation_uuid,
                         role="assistant",
-                        content=complete_answer,
+                        content=encrypt_text(complete_answer),
                         sources_json=json.dumps(sources_data, ensure_ascii=False) if sources_data else None
                     )
                     save_db.add(assistant_msg)
@@ -751,13 +893,14 @@ async def get_chat_history(
         )
         
     messages = result.scalars().all()
-    
+
     history = []
     for msg in messages:
         entry = {
             "id": str(msg.id),
             "role": msg.role,
-            "content": msg.content,
+            # Decifratura in memoria: nel DB il contenuto resta cifrato.
+            "content": decrypt_text(msg.content),
             "created_at": msg.created_at.isoformat() if msg.created_at else None
         }
         if msg.sources_json:
@@ -766,7 +909,18 @@ async def get_chat_history(
             except json.JSONDecodeError:
                 pass
         history.append(entry)
-    
+
+    # Audit: ogni lettura dei contenuti decifrati lascia traccia (chi, cosa,
+    # quanti messaggi) — vale anche per accessi interni del team via API.
+    if messages:
+        await log_audit(
+            action="chat_history.read",
+            actor_user_id=tenant["user_id"],
+            company_id=tenant["company_id"],
+            target=conversation_id,
+            detail={"messages": len(messages)},
+        )
+
     return history
 
 
@@ -1250,6 +1404,96 @@ async def outlook_disconnect(
     await db.commit()
     logger.info(f"Outlook disconnesso per l'azienda {company_uuid} (purge={purge})")
     return {"status": "success"}
+
+
+# --- Cancellazione dati azienda (GDPR, art. 17 "diritto all'oblio") ---
+@app.delete("/v1/company/data")
+async def delete_company_data(
+    body: CompanyDataDeleteRequest,
+    request: Request,
+    tenant: dict = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Elimina TUTTI i dati dell'azienda del tenant corrente, in modo irreversibile.
+
+    Copre: documenti e file archiviati (bucket remoto e disco locale), chunk
+    vettoriali, conversazioni e messaggi, configurazioni LLM, account email
+    collegati, utenti e il record azienda stesso (cascata sulle FK).
+    Le righe di audit NON vengono toccate: senza FK, sopravvivono come prova
+    dell'avvenuta cancellazione.
+
+    Riservato agli utenti con ruolo 'admin' (verificato sul DB, non sul JWT:
+    il token non porta il ruolo e comunque non sarebbe revocabile).
+    """
+    if not body.confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="Cancellazione non confermata: inviare {\"confirm\": true} nel body."
+        )
+
+    company_uuid = uuid.UUID(tenant["company_id"])
+    user_uuid = uuid.UUID(tenant["user_id"])
+
+    result = await db.execute(select(User).filter(User.id == user_uuid))
+    actor = result.scalars().first()
+    if not actor or actor.role != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Solo un amministratore può richiedere la cancellazione dei dati aziendali."
+        )
+
+    result = await db.execute(select(Company).filter(Company.id == company_uuid))
+    company = result.scalars().first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Azienda non trovata")
+
+    # Conteggi per il log di audit, PRIMA della cancellazione.
+    counts = {}
+    for label, table in (("documents", "documents"), ("chunks", "chunks"),
+                         ("conversations", "conversations"), ("chat_messages", "chat_messages"),
+                         ("users", "users")):
+        res = await db.execute(
+            sqlalchemy_text(f"SELECT COUNT(*) FROM {table} WHERE company_id = :cid"),
+            {"cid": str(company_uuid)},
+        )
+        counts[label] = res.scalar() or 0
+
+    # File archiviati: il DB li cancella in cascata come record, ma gli
+    # oggetti nel bucket remoto vanno rimossi esplicitamente.
+    docs_result = await db.execute(
+        select(Document).filter(Document.company_id == company_uuid)
+    )
+    for doc in docs_result.scalars().all():
+        try:
+            if storage.is_remote(doc.storage_path):
+                await storage.delete_file(doc.storage_path)
+            elif doc.storage_path and os.path.exists(doc.storage_path):
+                os.remove(doc.storage_path)
+        except Exception as e:
+            # La cancellazione dei dati nel DB non si ferma per un file
+            # orfano: si logga e si prosegue.
+            logger.warning(f"File {doc.storage_path} non rimosso durante la cancellazione GDPR: {e}")
+
+    local_dir = f"./storage/company_{company_uuid}"
+    if os.path.isdir(local_dir):
+        shutil.rmtree(local_dir, ignore_errors=True)
+
+    # Il record azienda trascina in cascata (FK ON DELETE CASCADE) utenti,
+    # documenti, chunk, conversazioni, messaggi, impostazioni LLM e account
+    # email.
+    await db.delete(company)
+    await db.commit()
+
+    await log_audit(
+        action="company.gdpr_delete",
+        actor_user_id=str(user_uuid),
+        company_id=str(company_uuid),
+        target=str(company_uuid),
+        detail=counts,
+        ip_address=request.client.host if request.client else None,
+    )
+    logger.info(f"Cancellazione GDPR completata per l'azienda {company_uuid}: {counts}")
+    return {"status": "success", "deleted": counts}
 
 
 # --- Informazioni Profilo e Azienda ---

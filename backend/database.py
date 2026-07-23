@@ -3,17 +3,42 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from sqlalchemy import Column, String, ForeignKey, TEXT, TIMESTAMP, LargeBinary, Integer, Index, Boolean, text as sqlalchemy_text
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.engine.url import make_url
 from backend.config import get_settings
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+
+def _connect_args() -> dict:
+    """Forza TLS verso il database quando l'host non è locale.
+
+    La cifratura in transito non deve dipendere dal fatto che la
+    DATABASE_URL includa ?ssl=: se DB_FORCE_SSL è attivo e il DB è remoto,
+    asyncpg negozia comunque TLS. In locale (localhost/127.0.0.1) resta in
+    chiaro per non rompere lo sviluppo.
+    """
+    if not settings.DB_FORCE_SSL:
+        return {}
+    try:
+        url = make_url(settings.DATABASE_URL)
+    except Exception:
+        return {}
+    host = (url.host or "").lower()
+    if host in ("localhost", "127.0.0.1", "::1", ""):
+        return {}
+    if "ssl" in (url.query or {}):
+        return {}  # la URL specifica già la propria modalità TLS
+    return {"ssl": True}
+
+
 engine = create_async_engine(
-    settings.DATABASE_URL, 
+    settings.DATABASE_URL,
     echo=False,
     pool_size=settings.DB_POOL_SIZE,
     max_overflow=settings.DB_MAX_OVERFLOW,
     pool_pre_ping=True,  # Verifica connessioni stale prima dell'uso
+    connect_args=_connect_args(),
 )
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()
@@ -39,6 +64,10 @@ class User(Base):
     password_hash = Column(TEXT, nullable=False)
     company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"))
     role = Column(String(20), default="user")
+    # True finché il cliente non ha sostituito la password provvisoria (creata
+    # manualmente dal founder) con una propria. Finché è True il login rilascia
+    # solo un token "provvisorio" utile esclusivamente al cambio password.
+    must_change_password = Column(Boolean, nullable=False, default=True)
     
     # Relationships
     company = relationship("Company", back_populates="users")
@@ -203,6 +232,32 @@ class EmailAccount(Base):
     )
 
 
+class AuditLog(Base):
+    """Registro accessi/azioni sensibili (audit trail).
+
+    Nessuna foreign key verso companies/users: le righe di audit devono
+    sopravvivere alla cancellazione del soggetto (es. GDPR delete), quindi
+    gli ID sono UUID semplici. Il campo detail non deve MAI contenere
+    contenuti di messaggi o API key: solo metadati (conteggi, ID, esiti).
+    """
+    __tablename__ = "audit_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True)
+    actor_user_id = Column(UUID(as_uuid=True), nullable=True)
+    company_id = Column(UUID(as_uuid=True), nullable=True)
+    action = Column(String(100), nullable=False)  # es. 'chat_history.read', 'company.gdpr_delete'
+    target = Column(String(255), nullable=True)   # ID risorsa interessata
+    detail = Column(TEXT, nullable=True)          # metadati JSON, mai contenuti
+    ip_address = Column(String(64), nullable=True)
+    created_at = Column(TIMESTAMP, server_default="NOW()")
+
+    __table_args__ = (
+        Index("idx_audit_logs_company_id", "company_id"),
+        Index("idx_audit_logs_action", "action"),
+        Index("idx_audit_logs_created_at", "created_at"),
+    )
+
+
 async def verify_and_migrate_db():
     """Verifica lo stato del database e applica le migrazioni per le nuove tabelle/colonne."""
     logger.info("Verifica e migrazione database in corso...")
@@ -247,6 +302,19 @@ async def verify_and_migrate_db():
             )
         """))
         
+        # Cambio password obbligatorio al primo accesso. Due passaggi voluti:
+        # la colonna viene aggiunta con DEFAULT FALSE, così gli utenti GIÀ
+        # esistenti (che hanno già una password operativa) non vengono forzati
+        # a cambiarla; subito dopo si porta il default a TRUE, così ogni NUOVO
+        # account creato dal founder parte con la password provvisoria da
+        # sostituire al primo login.
+        await conn.execute(sqlalchemy_text("""
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE
+        """))
+        await conn.execute(sqlalchemy_text("""
+            ALTER TABLE users ALTER COLUMN must_change_password SET DEFAULT TRUE
+        """))
+
         # Aggiungi error_message a documents se non esiste (messaggio leggibile
         # quando l'elaborazione di un documento fallisce, es. embedding HF)
         await conn.execute(sqlalchemy_text("""
@@ -297,6 +365,31 @@ async def verify_and_migrate_db():
         """))
         await conn.execute(sqlalchemy_text(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_email_accounts_company_id ON email_accounts(company_id)"
+        ))
+
+        # Tabella audit_logs: accessi interni ai contenuti e azioni sensibili.
+        # Senza FK: le righe devono sopravvivere alla cancellazione GDPR
+        # dell'azienda a cui si riferiscono.
+        await conn.execute(sqlalchemy_text("""
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id UUID PRIMARY KEY,
+                actor_user_id UUID,
+                company_id UUID,
+                action VARCHAR(100) NOT NULL,
+                target VARCHAR(255),
+                detail TEXT,
+                ip_address VARCHAR(64),
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """))
+        await conn.execute(sqlalchemy_text(
+            "CREATE INDEX IF NOT EXISTS idx_audit_logs_company_id ON audit_logs(company_id)"
+        ))
+        await conn.execute(sqlalchemy_text(
+            "CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action)"
+        ))
+        await conn.execute(sqlalchemy_text(
+            "CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at)"
         ))
 
         # Crea gli indici se non esistono

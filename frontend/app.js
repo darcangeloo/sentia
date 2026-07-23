@@ -17,6 +17,10 @@ const API_URL = 'https://api.asksentia.com';
 const state = {
     token: localStorage.getItem('rag_token'),
     userEmail: localStorage.getItem('rag_email'),
+    // Primo accesso: il token in localStorage è "provvisorio" e vale solo per
+    // il cambio password. Persistito così un reload a metà flusso non finisce
+    // sull'app (dove ogni chiamata risponderebbe 403).
+    mustChangePassword: localStorage.getItem('rag_must_change') === '1',
     conversations: [],
     activeConversationId: null,
     messages: [],
@@ -104,6 +108,13 @@ const dom = {
     loginBtn: $('#login-btn'),
     loginError: $('#login-error'),
 
+    changePasswordPage: $('#change-password-page'),
+    changePasswordForm: $('#change-password-form'),
+    newPassword: $('#new-password'),
+    confirmPassword: $('#confirm-password'),
+    changePasswordBtn: $('#change-password-btn'),
+    changePasswordError: $('#change-password-error'),
+
     sidebar: $('#sidebar'),
     sidebarTenant: $('#sidebar-tenant'),
     mobileOverlay: $('#mobile-overlay'),
@@ -187,7 +198,8 @@ document.addEventListener('DOMContentLoaded', () => {
     applyRailState();
     applyTheme();
 
-    if (state.token) showApp();
+    if (state.token && state.mustChangePassword) showChangePassword();
+    else if (state.token) showApp();
     else showLogin();
 
     setupEventListeners();
@@ -195,6 +207,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 function setupEventListeners() {
     dom.loginForm.addEventListener('submit', handleLogin);
+    dom.changePasswordForm.addEventListener('submit', handleChangePassword);
     dom.btnNewChat.addEventListener('click', handleCreateConversation);
 
     dom.chatInput.addEventListener('input', handleInputChange);
@@ -286,9 +299,17 @@ async function handleLogin(e) {
         const loginData = await res.json();
         state.token = loginData.access_token;
         state.userEmail = email;
+        state.mustChangePassword = !!loginData.must_change_password;
         localStorage.setItem('rag_token', state.token);
         localStorage.setItem('rag_email', email);
 
+        if (state.mustChangePassword) {
+            // Il token è provvisorio: solo il cambio password è raggiungibile.
+            localStorage.setItem('rag_must_change', '1');
+            showChangePassword();
+            return;
+        }
+        localStorage.removeItem('rag_must_change');
         showApp();
     } catch (err) {
         dom.loginError.textContent = err.message;
@@ -297,6 +318,61 @@ async function handleLogin(e) {
         dom.loginBtn.disabled = false;
         dom.loginBtn.textContent = 'Accedi';
     }
+}
+
+async function handleChangePassword(e) {
+    e.preventDefault();
+    const newPassword = dom.newPassword.value;
+    const confirm = dom.confirmPassword.value;
+    dom.changePasswordError.classList.add('hidden');
+
+    if (newPassword.length < 8) {
+        showChangePasswordError('La password deve avere almeno 8 caratteri.');
+        return;
+    }
+    if (newPassword !== confirm) {
+        showChangePasswordError('Le due password non coincidono.');
+        return;
+    }
+
+    dom.changePasswordBtn.disabled = true;
+    dom.changePasswordBtn.innerHTML = '<span class="spinner"></span> Salvataggio…';
+
+    try {
+        const res = await fetch(`${API_URL}/v1/auth/change-password`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${state.token}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ new_password: newPassword }),
+        });
+        if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.detail || 'Non è stato possibile cambiare la password.');
+        }
+
+        const data = await res.json();
+        // Nuovo token normale: da qui l'app è accessibile.
+        state.token = data.access_token;
+        state.mustChangePassword = false;
+        localStorage.setItem('rag_token', state.token);
+        localStorage.removeItem('rag_must_change');
+
+        dom.newPassword.value = '';
+        dom.confirmPassword.value = '';
+        showApp();
+    } catch (err) {
+        showChangePasswordError(err.message);
+    } finally {
+        dom.changePasswordBtn.disabled = false;
+        dom.changePasswordBtn.textContent = 'Imposta password e accedi';
+    }
+}
+
+function showChangePasswordError(message) {
+    dom.changePasswordError.textContent = message;
+    dom.changePasswordError.classList.remove('hidden');
 }
 
 function handleLogout() {
@@ -309,8 +385,10 @@ function handleLogout() {
     state.llmSettings = [];
     state.sourcesByKey.clear();
     state.queue = [];
+    state.mustChangePassword = false;
     localStorage.removeItem('rag_token');
     localStorage.removeItem('rag_email');
+    localStorage.removeItem('rag_must_change');
     resetLLMSettingsForm();
     renderQueue();
     renderRail();
@@ -323,10 +401,21 @@ function handleLogout() {
 // ============================================================
 function showLogin() {
     dom.loginPage.classList.remove('hidden');
+    dom.changePasswordPage.classList.add('hidden');
     dom.appPage.classList.add('hidden');
     dom.loginEmail.value = '';
     dom.loginPassword.value = '';
     dom.loginError.classList.add('hidden');
+}
+
+function showChangePassword() {
+    dom.loginPage.classList.add('hidden');
+    dom.appPage.classList.add('hidden');
+    dom.changePasswordPage.classList.remove('hidden');
+    dom.newPassword.value = '';
+    dom.confirmPassword.value = '';
+    dom.changePasswordError.classList.add('hidden');
+    dom.newPassword.focus();
 }
 
 function renderSkeletonRows(container, count = 3) {
@@ -337,6 +426,7 @@ function renderSkeletonRows(container, count = 3) {
 
 function showApp() {
     dom.loginPage.classList.add('hidden');
+    dom.changePasswordPage.classList.add('hidden');
     dom.appPage.classList.remove('hidden');
 
     if (state.userEmail) {

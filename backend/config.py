@@ -146,6 +146,20 @@ class Settings(BaseSettings):
     def outlook_enabled(self) -> bool:
         return bool(self.MS_CLIENT_ID and self.MS_CLIENT_SECRET)
 
+    # === Data retention (GDPR / contenimento crescita DB) ===
+    # Le conversazioni senza attività (updated_at) da più di questi giorni
+    # vengono eliminate dal job di manutenzione, con i messaggi in cascata.
+    CONVERSATION_RETENTION_DAYS: int = 90
+    # Frequenza del giro di purge. Un giro al giorno basta: la finestra di
+    # retention si misura in mesi.
+    CONVERSATION_PURGE_INTERVAL_HOURS: int = 24
+
+    # === TLS verso il database ===
+    # Se true e l'host del DB non è locale, la connessione asyncpg viene
+    # forzata su TLS anche quando la DATABASE_URL non specifica ?ssl=.
+    # I provider gestiti (Supabase, Render, Neon...) lo supportano tutti.
+    DB_FORCE_SSL: bool = True
+
     # === Rate Limiting (login) ===
     LOGIN_RATE_LIMIT_ATTEMPTS: int = 5
     LOGIN_RATE_LIMIT_WINDOW_SECONDS: int = 300

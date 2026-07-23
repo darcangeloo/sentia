@@ -49,6 +49,33 @@
     </div>
 
 
+    <!-- ================ CAMBIO PASSWORD (primo accesso) ================ -->
+    <div id="change-password-page" class="login-container hidden">
+        <div class="login-card">
+            <div class="login-logo">
+                <span class="login-logo-icon">S</span>
+                <h1>Sentia</h1>
+            </div>
+            <p class="login-subtitle">Primo accesso: imposta una nuova password personale. La password provvisoria non sarà più valida.</p>
+
+            <form id="change-password-form">
+                <div class="form-group">
+                    <label class="form-label" for="new-password">Nuova password</label>
+                    <input class="form-input" type="password" id="new-password" placeholder="Almeno 8 caratteri" required autocomplete="new-password" minlength="8">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="confirm-password">Conferma password</label>
+                    <input class="form-input" type="password" id="confirm-password" placeholder="Ripeti la password" required autocomplete="new-password" minlength="8">
+                </div>
+                <button class="btn-primary btn-block" type="submit" id="change-password-btn">Imposta password e accedi</button>
+            </form>
+            <div id="change-password-error" class="login-error hidden" role="alert"></div>
+
+            <p class="login-foot">La nuova password è nota solo a te: nessuno del team può vederla o recuperarla.</p>
+        </div>
+    </div>
+
+
     <!-- ===================== APP ===================== -->
     <div id="app-page" class="app-container hidden">
 
