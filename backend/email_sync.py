@@ -264,6 +264,11 @@ async def _index_message(db: AsyncSession, account: EmailAccount, access_token: 
     except Exception as e:
         logger.error(f"Indicizzazione email {message_id} fallita: {e}", exc_info=True)
         await db.rollback()
+        # Il rollback scade tutti gli oggetti della sessione (anche account):
+        # senza refresh, il primo accesso a un attributo scaduto fuori da un
+        # await farebbe partire un lazy-load sincrono → MissingGreenlet.
+        await db.refresh(account)
+        await db.refresh(doc)
         doc.status = "error"
         doc.error_message = str(e)[:1000]
         await db.commit()
@@ -422,6 +427,7 @@ async def sync_account(account_id: str):
         except Exception as e:
             logger.error(f"Sync Outlook fallito per l'account {account_id}: {e}", exc_info=True)
             await db.rollback()
+            await db.refresh(account)
             account.status = "error"
             account.error_message = str(e)[:1000]
             account.updated_at = _utcnow_naive()
