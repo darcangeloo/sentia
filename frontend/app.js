@@ -179,14 +179,21 @@ const dom = {
     outlookCard: $('#card-outlook'),
     outlookStatusBadge: $('#outlook-status-badge'),
     outlookDesc: $('#outlook-desc'),
-    outlookMeta: $('#outlook-meta'),
-    outlookEmail: $('#outlook-email'),
-    outlookLastSync: $('#outlook-last-sync'),
-    outlookCount: $('#outlook-count'),
+    outlookAccounts: $('#outlook-accounts'),
     outlookError: $('#outlook-error'),
+    outlookLimitNote: $('#outlook-limit-note'),
     btnConnectOutlook: $('#btn-connect-outlook'),
     btnSyncOutlook: $('#btn-sync-outlook'),
-    btnDisconnectOutlook: $('#btn-disconnect-outlook'),
+    // Barra di stato del piano
+    planCard: $('#plan-card'),
+    planName: $('#plan-name'),
+    planBadge: $('#plan-badge'),
+    planHistory: $('#plan-history'),
+    planDocumentsValue: $('#plan-documents-value'),
+    planDocumentsFill: $('#plan-documents-fill'),
+    planInboxesValue: $('#plan-inboxes-value'),
+    planInboxesFill: $('#plan-inboxes-fill'),
+    planHint: $('#plan-hint'),
 };
 
 
@@ -266,8 +273,15 @@ function setupEventListeners() {
 
     // Integrazione Outlook
     dom.btnConnectOutlook.addEventListener('click', connectOutlook);
-    dom.btnSyncOutlook.addEventListener('click', syncOutlookNow);
-    dom.btnDisconnectOutlook.addEventListener('click', disconnectOutlook);
+    dom.btnSyncOutlook.addEventListener('click', () => syncOutlookNow());
+    // Le righe delle caselle sono ricostruite a ogni render: delega sul contenitore.
+    dom.outlookAccounts.addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-inbox-action]');
+        if (!btn) return;
+        const accountId = btn.dataset.accountId;
+        if (btn.dataset.inboxAction === 'sync') syncOutlookNow(accountId);
+        else if (btn.dataset.inboxAction === 'disconnect') disconnectOutlook(accountId, btn.dataset.email);
+    });
 }
 
 
@@ -441,10 +455,11 @@ function showApp() {
     loadConversations();
     loadLLMSettings();
     loadOutlookStatus();
+    loadPlan();
     loadCompanyName();
 
     // Ritorno dal flusso OAuth Outlook: il callback backend redirige qui
-    // con ?outlook=connected|denied|error. Toast + apertura Impostazioni,
+    // con ?outlook=connected|denied|error|limit. Toast + apertura Impostazioni,
     // poi si pulisce la query string per non rimostrare il toast al reload.
     const params = new URLSearchParams(window.location.search);
     const outlookOutcome = params.get('outlook');
@@ -454,6 +469,10 @@ function showApp() {
             showToast('Outlook collegato. Import delle email avviato in background.', 'success');
         } else if (outlookOutcome === 'denied') {
             showToast('Collegamento Outlook annullato.', 'info');
+        } else if (outlookOutcome === 'limit') {
+            // Il consenso Microsoft è andato a buon fine, ma il piano non
+            // consente un'altra casella: nessun token è stato salvato.
+            showToast('Hai raggiunto il numero di caselle incluse nel piano. Passa a un piano superiore per collegarne altre.', 'error');
         } else {
             showToast('Collegamento Outlook non riuscito. Riprova.', 'error');
         }
@@ -898,6 +917,7 @@ async function deleteDocument(docId, filename) {
         await apiFetch(`/v1/documents/${docId}`, { method: 'DELETE' });
         showToast('Documento eliminato.', 'success');
         loadDocuments();
+        loadPlan();
     } catch (err) {
         showToast('Eliminazione non riuscita.', 'error');
     }
@@ -1034,10 +1054,12 @@ async function processQueueItem(item) {
         item.status = 'error';
         item.progress = 100;
         item.detail = err.message || 'Caricamento non riuscito.';
+        if (err.planLimit) showToast(err.message, 'error');
     }
 
     renderQueue();
     loadDocuments();
+    loadPlan();
 }
 
 /** POST multipart con progresso reale. fetch() non espone l'upload progress. */
@@ -1066,8 +1088,13 @@ function uploadWithProgress(file, onProgress) {
                 return;
             }
             let detail = `Errore ${xhr.status}`;
-            try { detail = JSON.parse(xhr.responseText).detail || detail; } catch { /* corpo non JSON */ }
-            reject(new Error(detail));
+            let payload = null;
+            try { payload = JSON.parse(xhr.responseText); detail = payload.detail || detail; } catch { /* corpo non JSON */ }
+            const err = new Error(detail);
+            // 409 con error='plan_limit_exceeded': limite di piano, non un guasto.
+            // Va segnalato all'utente in modo esplicito, con invito all'upgrade.
+            err.planLimit = payload?.error === 'plan_limit_exceeded';
+            reject(err);
         });
 
         xhr.addEventListener('error', () => reject(new Error('Connessione interrotta.')));
@@ -1780,52 +1807,88 @@ async function loadOutlookStatus() {
 
 function renderOutlookStatus(status) {
     const badge = dom.outlookStatusBadge;
+    const accounts = status.accounts || [];
+    const anySyncing = accounts.some((a) => a.status === 'syncing');
+    const anyError = accounts.some((a) => a.status === 'error');
+    const connectedCount = accounts.filter((a) => a.connected).length;
 
-    if (!status.connected) {
-        const disconnected = status.status === 'disconnected';
-        badge.textContent = disconnected ? 'Disconnesso' : 'Non connesso';
+    // Badge riassuntivo della card: priorità a ciò che richiede attenzione.
+    if (connectedCount === 0) {
+        badge.textContent = accounts.length ? 'Disconnesso' : 'Non connesso';
         badge.className = 'provider-status-badge inactive';
-        dom.outlookCard.classList.remove('active');
-        dom.outlookDesc.classList.remove('hidden');
-        dom.outlookMeta.classList.add('hidden');
-        dom.btnConnectOutlook.textContent = disconnected ? 'Ricollega Outlook' : 'Collega Outlook';
-        dom.btnConnectOutlook.classList.remove('hidden');
-        dom.btnSyncOutlook.classList.add('hidden');
-        dom.btnDisconnectOutlook.classList.toggle('hidden', !disconnected);
-        // Un account disconnesso (token revocato/scaduto) mostra il perché.
-        const showError = disconnected && status.error_message;
-        dom.outlookError.classList.toggle('hidden', !showError);
-        if (showError) dom.outlookError.textContent = status.error_message;
-        stopOutlookPolling();
-        return;
+    } else {
+        badge.textContent = anySyncing
+            ? 'Sincronizzazione…'
+            : (anyError ? 'Errore sync' : (connectedCount > 1 ? `${connectedCount} caselle` : 'Connesso'));
+        badge.className = `provider-status-badge ${anyError ? 'inactive' : 'active'}`;
     }
 
-    const syncing = status.status === 'syncing';
-    const hasError = status.status === 'error';
-    badge.textContent = syncing ? 'Sincronizzazione…' : (hasError ? 'Errore sync' : 'Connesso');
-    badge.className = `provider-status-badge ${hasError ? 'inactive' : 'active'}`;
-    dom.outlookCard.classList.add('active');
-    dom.outlookDesc.classList.add('hidden');
+    dom.outlookCard.classList.toggle('active', connectedCount > 0);
+    dom.outlookDesc.classList.toggle('hidden', accounts.length > 0);
+    dom.outlookAccounts.classList.toggle('hidden', accounts.length === 0);
+    dom.outlookAccounts.innerHTML = accounts.map(renderInboxRow).join('');
 
-    dom.outlookMeta.classList.remove('hidden');
-    dom.outlookEmail.textContent = status.email_address || '—';
-    dom.outlookLastSync.textContent = status.last_sync_at
-        ? new Date(status.last_sync_at).toLocaleString('it-IT')
-        : (syncing ? 'in corso…' : 'mai');
-    dom.outlookCount.textContent = String(status.email_count ?? 0);
+    // L'errore per-casella è mostrato nella sua riga: qui resta solo il caso
+    // in cui non ci sono righe da mostrare.
+    dom.outlookError.classList.add('hidden');
 
-    dom.outlookError.classList.toggle('hidden', !hasError);
-    if (hasError) dom.outlookError.textContent = status.error_message || 'Ultima sincronizzazione fallita.';
+    // Aggiunta di una casella consentita solo entro il limite del piano.
+    const canAdd = status.can_add_inbox !== false;
+    dom.btnConnectOutlook.classList.toggle('hidden', !canAdd);
+    dom.btnConnectOutlook.textContent = accounts.length ? 'Aggiungi casella' : 'Collega Outlook';
+    dom.btnSyncOutlook.classList.toggle('hidden', connectedCount === 0);
+    dom.btnSyncOutlook.disabled = anySyncing;
+    dom.btnSyncOutlook.textContent = connectedCount > 1 ? 'Sincronizza tutte' : 'Sincronizza ora';
 
-    dom.btnConnectOutlook.classList.add('hidden');
-    dom.btnSyncOutlook.classList.remove('hidden');
-    dom.btnSyncOutlook.disabled = syncing;
-    dom.btnDisconnectOutlook.classList.remove('hidden');
+    const limitReached = !canAdd && status.inbox_limit != null;
+    dom.outlookLimitNote.classList.toggle('hidden', !limitReached);
+    if (limitReached) {
+        const n = status.inbox_limit;
+        dom.outlookLimitNote.textContent =
+            `Limite del piano raggiunto: ${n} ${n === 1 ? 'casella' : 'caselle'}. Passa a un piano superiore per aggiungerne altre.`;
+    }
 
     // Durante l'import lo stato cambia da solo: si continua a leggere finché
-    // il sync non finisce, per aggiornare contatore e badge senza reload.
-    if (syncing) startOutlookPolling();
+    // il sync non finisce, per aggiornare contatori e badge senza reload.
+    if (anySyncing) startOutlookPolling();
     else stopOutlookPolling();
+}
+
+/** Riga di una singola casella collegata. */
+function renderInboxRow(account) {
+    const syncing = account.status === 'syncing';
+    const hasError = account.status === 'error';
+    const disconnected = account.status === 'disconnected';
+
+    const stateLabel = disconnected
+        ? 'Disconnessa'
+        : (syncing ? 'Sincronizzazione…' : (hasError ? 'Errore sync' : 'Connessa'));
+    const lastSync = account.last_sync_at
+        ? new Date(account.last_sync_at).toLocaleString('it-IT')
+        : (syncing ? 'in corso…' : 'mai');
+
+    const errorLine = (hasError || disconnected) && account.error_message
+        ? `<p class="inbox-error">${escapeHtml(account.error_message)}</p>`
+        : '';
+
+    return `
+        <div class="inbox-row ${disconnected ? 'inactive' : ''}">
+            <div class="inbox-row-main">
+                <span class="inbox-email">${escapeHtml(account.email_address || '—')}</span>
+                <span class="inbox-state ${hasError || disconnected ? 'warn' : ''}">${stateLabel}</span>
+            </div>
+            <div class="inbox-row-meta">
+                <span>Ultimo sync: ${escapeHtml(lastSync)}</span>
+                <span>${account.email_count ?? 0} email indicizzate</span>
+            </div>
+            ${errorLine}
+            <div class="inbox-row-actions">
+                <button class="btn-ghost btn-small" data-inbox-action="sync"
+                        data-account-id="${account.id}" ${syncing || disconnected ? 'disabled' : ''}>Sincronizza</button>
+                <button class="btn-ghost btn-small" data-inbox-action="disconnect"
+                        data-account-id="${account.id}" data-email="${escapeHtml(account.email_address || '')}">Disconnetti</button>
+            </div>
+        </div>`;
 }
 
 function startOutlookPolling() {
@@ -1853,10 +1916,14 @@ async function connectOutlook() {
     }
 }
 
-async function syncOutlookNow() {
+/** Sync di una casella (accountId) o di tutte quelle collegate (accountId assente). */
+async function syncOutlookNow(accountId) {
     dom.btnSyncOutlook.disabled = true;
+    const endpoint = accountId
+        ? `/v1/integrations/outlook/sync?account_id=${encodeURIComponent(accountId)}`
+        : '/v1/integrations/outlook/sync';
     try {
-        await apiFetch('/v1/integrations/outlook/sync', { method: 'POST' });
+        await apiFetch(endpoint, { method: 'POST' });
         showToast('Sincronizzazione avviata.', 'info');
         await loadOutlookStatus();
     } catch (err) {
@@ -1865,22 +1932,80 @@ async function syncOutlookNow() {
     }
 }
 
-async function disconnectOutlook() {
+async function disconnectOutlook(accountId, email) {
     const ok = await confirmModal({
-        title: 'Disconnettere Outlook?',
-        message: 'L\'accesso alla casella viene revocato e le email indicizzate vengono rimosse dall\'assistente. I documenti PDF caricati non vengono toccati.',
+        title: 'Disconnettere questa casella?',
+        message: `L'accesso a ${email || 'questa casella'} viene revocato e le sue email indicizzate vengono rimosse dall'assistente. Le altre caselle e i documenti PDF caricati non vengono toccati.`,
         confirmLabel: 'Disconnetti',
         danger: true,
     });
     if (!ok) return;
 
+    const query = accountId ? `account_id=${encodeURIComponent(accountId)}&purge=true` : 'purge=true';
     try {
-        await apiFetch('/v1/integrations/outlook?purge=true', { method: 'DELETE' });
-        showToast('Outlook disconnesso.', 'info');
+        await apiFetch(`/v1/integrations/outlook?${query}`, { method: 'DELETE' });
+        showToast('Casella disconnessa.', 'info');
         await loadOutlookStatus();
+        await loadPlan();
     } catch (err) {
-        showToast('Disconnessione non riuscita.', 'error');
+        showToast(`Disconnessione non riuscita: ${err.message}`, 'error');
     }
+}
+
+
+// ============================================================
+// PIANO — barra di stato utilizzo vs limiti
+// ============================================================
+async function loadPlan() {
+    try {
+        const res = await apiFetch('/v1/plan');
+        renderPlanBar(await res.json());
+    } catch (err) {
+        // Piano non caricato: la barra resta ai placeholder, l'app funziona.
+    }
+}
+
+function renderPlanBar(plan) {
+    dom.planName.textContent = `Piano ${plan.plan_label || '—'}`;
+    dom.planBadge.textContent = plan.plan_label || '—';
+    dom.planBadge.className = `plan-badge plan-${plan.plan}`;
+    dom.planHistory.textContent = `Storico email: ${plan.history_label || '—'}`;
+
+    const docs = renderMeter(dom.planDocumentsFill, dom.planDocumentsValue, plan.documents, 'documenti');
+    const inbox = renderMeter(dom.planInboxesFill, dom.planInboxesValue, plan.inboxes, 'caselle');
+
+    // Avviso solo quando serve: limite raggiunto o vicino.
+    const worst = Math.max(docs, inbox);
+    const hint = worst >= 1
+        ? 'Limite del piano raggiunto. I dati già indicizzati restano accessibili, ma per aggiungerne altri serve un piano superiore.'
+        : (worst >= 0.75 ? 'Ti stai avvicinando ai limiti del piano.' : '');
+    dom.planHint.textContent = hint;
+    dom.planHint.classList.toggle('hidden', !hint);
+    dom.planHint.className = `plan-hint ${worst >= 1 ? 'danger' : 'warn'}${hint ? '' : ' hidden'}`;
+}
+
+/**
+ * Riempie una barra. Ritorna il rapporto uso/limite (0 per illimitato), usato
+ * per decidere il colore complessivo della card.
+ */
+function renderMeter(fillEl, valueEl, usage, unit) {
+    const used = usage?.used ?? 0;
+    const limit = usage?.limit ?? null;
+
+    if (limit === null) {
+        valueEl.textContent = `${used} — illimitati`;
+        fillEl.style.width = '100%';
+        fillEl.className = 'plan-meter-fill unlimited';
+        return 0;
+    }
+
+    const ratio = limit > 0 ? used / limit : 1;
+    valueEl.textContent = `${used} / ${limit} ${unit}`;
+    fillEl.style.width = `${Math.min(100, Math.round(ratio * 100))}%`;
+    // Verde sotto il 75%, ambra fino al limite, rosso a limite raggiunto/superato.
+    const level = ratio >= 1 ? 'danger' : (ratio >= 0.75 ? 'warn' : 'ok');
+    fillEl.className = `plan-meter-fill ${level}`;
+    return ratio;
 }
 
 

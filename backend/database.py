@@ -80,6 +80,10 @@ class Company(Base):
     name = Column(String(255), nullable=False)
     llm_provider = Column(String(50))
     encrypted_api_key = Column(LargeBinary)
+    # Piano tariffario: starter | business | enterprise. Governa i limiti
+    # applicativi (documenti, inbox, finestra storico email) — vedi
+    # backend/plans.py. Assegnato manualmente dal founder, mai da input client.
+    plan = Column(String(20), nullable=False, default="starter", server_default="starter")
     created_at = Column(TIMESTAMP, server_default="NOW()")
     
     # Relationships
@@ -119,6 +123,10 @@ class Document(Base):
     # di reimportare due volte lo stesso messaggio (delta + import iniziale
     # possono sovrapporsi).
     source_ref = Column(String(512), nullable=True)
+    # Inbox Outlook di provenienza (solo per source='email'). Permette il
+    # conteggio e la rimozione per-casella quando un'azienda collega più inbox
+    # (piani Business/Enterprise). NULL per i PDF caricati.
+    email_account_id = Column(UUID(as_uuid=True), ForeignKey("email_accounts.id", ondelete="CASCADE"), nullable=True)
     error_message = Column(TEXT, nullable=True)
     page_count = Column(Integer, nullable=True)
     chunk_count = Column(Integer, nullable=True, default=0)
@@ -136,6 +144,7 @@ class Document(Base):
     __table_args__ = (
         Index("idx_documents_company_id", "company_id"),
         Index("idx_documents_company_hash", "company_id", "content_hash"),
+        Index("idx_documents_email_account_id", "email_account_id"),
     )
 
 
@@ -231,8 +240,11 @@ class EmailAccount(Base):
     """Account Outlook collegato da un'azienda per l'import email.
 
     I token OAuth sono cifrati con Fernet (stessa MASTER_KEY delle API key
-    LLM). Una sola mailbox per azienda: l'indice unico su company_id rende
-    l'upsert del callback OAuth privo di race condition.
+    LLM). Un'azienda può collegare più caselle in base al piano (1 Starter,
+    3 Business, illimitate Enterprise): l'unicità è su (company_id,
+    email_address), così la stessa casella non genera righe duplicate ma
+    caselle diverse convivono. Il limite di quante se ne possono collegare è
+    applicato a livello applicativo (backend/plans.py), non dallo schema.
     """
     __tablename__ = "email_accounts"
 
@@ -258,7 +270,8 @@ class EmailAccount(Base):
     updated_at = Column(TIMESTAMP, server_default="NOW()")
 
     __table_args__ = (
-        Index("idx_email_accounts_company_id", "company_id", unique=True),
+        Index("idx_email_accounts_company_id", "company_id"),
+        Index("idx_email_accounts_company_email", "company_id", "email_address", unique=True),
     )
 
 
@@ -345,6 +358,13 @@ async def verify_and_migrate_db():
             ALTER TABLE users ALTER COLUMN must_change_password SET DEFAULT TRUE
         """))
 
+        # plan su companies: piano tariffario (starter|business|enterprise).
+        # Governa i limiti applicativi (backend/plans.py). Le aziende esistenti
+        # ereditano 'starter'; il founder alza il piano manualmente.
+        await conn.execute(sqlalchemy_text("""
+            ALTER TABLE companies ADD COLUMN IF NOT EXISTS plan VARCHAR(20) NOT NULL DEFAULT 'starter'
+        """))
+
         # Aggiungi error_message a documents se non esiste (messaggio leggibile
         # quando l'elaborazione di un documento fallisce, es. embedding HF)
         await conn.execute(sqlalchemy_text("""
@@ -393,9 +413,45 @@ async def verify_and_migrate_db():
                 updated_at TIMESTAMP DEFAULT NOW()
             )
         """))
+        # Multi-inbox: si passa dall'unicità su company_id (una sola casella per
+        # azienda) all'unicità su (company_id, email_address). L'indice unico
+        # storico va rimosso e ricreato non-unico; il DROP è idempotente.
         await conn.execute(sqlalchemy_text(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_email_accounts_company_id ON email_accounts(company_id)"
+            "DROP INDEX IF EXISTS idx_email_accounts_company_id"
         ))
+        await conn.execute(sqlalchemy_text(
+            "CREATE INDEX IF NOT EXISTS idx_email_accounts_company_id ON email_accounts(company_id)"
+        ))
+        await conn.execute(sqlalchemy_text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_email_accounts_company_email "
+            "ON email_accounts(company_id, email_address)"
+        ))
+
+        # email_account_id su documents: collega ogni email importata alla casella
+        # di provenienza (conteggio e purge per-inbox). Aggiunto dopo la creazione
+        # di email_accounts perché ne referenzia la chiave.
+        await conn.execute(sqlalchemy_text("""
+            ALTER TABLE documents ADD COLUMN IF NOT EXISTS email_account_id UUID
+            REFERENCES email_accounts(id) ON DELETE CASCADE
+        """))
+        await conn.execute(sqlalchemy_text(
+            "CREATE INDEX IF NOT EXISTS idx_documents_email_account_id ON documents(email_account_id)"
+        ))
+        # Backfill delle email indicizzate prima del multi-inbox: allora esisteva
+        # al massimo una casella per azienda, quindi l'associazione è univoca.
+        # Senza questo i documenti storici resterebbero orfani e sparirebbero dai
+        # conteggi per casella. Il vincolo "esattamente una casella" serve anche a
+        # non riassegnare a caso i documenti volutamente sganciati da una
+        # disconnessione con purge=false in un'azienda che ne ha più di una.
+        await conn.execute(sqlalchemy_text("""
+            UPDATE documents d
+            SET email_account_id = a.id
+            FROM email_accounts a
+            WHERE d.company_id = a.company_id
+              AND d.source = 'email'
+              AND d.email_account_id IS NULL
+              AND (SELECT COUNT(*) FROM email_accounts x WHERE x.company_id = d.company_id) = 1
+        """))
 
         # Tabella audit_logs: accessi interni ai contenuti e azioni sensibili.
         # Senza FK: le righe devono sopravvivere alla cancellazione GDPR

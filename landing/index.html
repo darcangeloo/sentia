@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Sentia — Chiedi ai documenti della tua azienda. Ricerca AI su archivi interni ed email, con fonte e pagina per ogni risposta.">
+    <meta name="theme-color" content="#0f1211">
+    <title>Sentia — Chiedi ai documenti della tua azienda</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%232f7d5d'/><text x='16' y='22' font-family='Georgia,serif' font-size='16' font-weight='600' fill='%230f1211' text-anchor='middle'>S</text></svg>">
+</head>
+<body>
+
+    <header class="site-header">
+        <div class="wrap">
+            <a class="brand" href="/">
+                <span class="brand-mark">S</span>
+                <span class="brand-name">Sentia</span>
+            </a>
+            <nav class="header-nav" aria-label="Principale">
+                <a class="nav-link-how" href="#come-funziona">Come funziona</a>
+                <a href="#prezzi">Prezzi</a>
+                <a class="btn-primary" href="https://app.asksentia.com">Accedi</a>
+            </nav>
+        </div>
+    </header>
+
+    <!-- ===================== HERO ===================== -->
+    <section class="hero">
+        <div class="wrap">
+            <div class="hero-copy">
+                <p class="hero-eyebrow">Ricerca AI su documenti aziendali</p>
+                <h1>Smetti di cercare nei documenti. Chiedi.</h1>
+                <p class="hero-sub">
+                    Sentia indicizza l'archivio e la casella email della tua azienda e risponde
+                    alle domande dell'ufficio in linguaggio naturale. Ogni risposta cita il
+                    documento e la pagina da cui proviene: se un dato non c'è, te lo dice.
+                </p>
+                <div class="hero-ctas">
+                    <a class="btn-primary" href="#prezzi">Inizia con Sentia</a>
+                    <a class="btn-ghost" href="#come-funziona">Come funziona</a>
+                </div>
+                <p class="hero-note">Pensato per uffici amministrativi e contabili. Dati isolati per azienda.</p>
+            </div>
+
+            <!-- Vignetta prodotto: una risposta reale con le sue fonti -->
+            <div class="demo-card" aria-label="Esempio di risposta di Sentia">
+                <div class="demo-head">
+                    <span class="demo-head-title">Sentia</span>
+                    <span class="demo-head-badge">3 fonti</span>
+                </div>
+                <div class="demo-body">
+                    <div class="demo-q">Quanto abbiamo pagato a Rossi S.r.l. nel primo trimestre?</div>
+                    <div class="demo-a">
+                        <p>Nel primo trimestre risultano <strong>3 pagamenti</strong> a Rossi S.r.l., per un totale di <strong>7.420,00&nbsp;€</strong>:</p>
+                        <table class="demo-table">
+                            <thead>
+                                <tr><th>Data</th><th>Riferimento</th><th class="num">Importo</th></tr>
+                            </thead>
+                            <tbody>
+                                <tr><td>14/01</td><td>Fattura 2026/018</td><td class="num">2.140,00 €</td></tr>
+                                <tr><td>27/02</td><td>Fattura 2026/041</td><td class="num">3.100,00 €</td></tr>
+                                <tr><td>19/03</td><td>Fattura 2026/077</td><td class="num">2.180,00 €</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="demo-sources">
+                    <div class="demo-sources-label">Fonti</div>
+                    <div class="demo-source">
+                        <span class="demo-source-ordinal">1</span>
+                        <span class="demo-source-file">estratto_conto_marzo_2026.pdf</span>
+                        <span class="demo-source-page">p. 2</span>
+                        <span class="demo-source-kind">PDF</span>
+                    </div>
+                    <div class="demo-source">
+                        <span class="demo-source-ordinal">2</span>
+                        <span class="demo-source-file">fattura_rossi_2026-041.pdf</span>
+                        <span class="demo-source-page">p. 1</span>
+                        <span class="demo-source-kind">PDF</span>
+                    </div>
+                    <div class="demo-source">
+                        <span class="demo-source-ordinal">3</span>
+                        <span class="demo-source-file">RE: conferma bonifico Rossi</span>
+                        <span class="demo-source-page">19/03</span>
+                        <span class="demo-source-kind">Email</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ===================== COME FUNZIONA ===================== -->
+    <section class="section" id="come-funziona">
+        <div class="wrap">
+            <p class="section-eyebrow">Come funziona</p>
+            <h2 class="section-title">Dall'archivio alla risposta in tre passaggi</h2>
+            <p class="section-sub">
+                Nessuna migrazione, nessun cambio di abitudini: Sentia lavora sui documenti
+                e sulle email che la tua azienda ha già.
+            </p>
+            <div class="steps">
+                <div class="step">
+                    <span class="step-num">01</span>
+                    <h3>Connetti documenti e inbox</h3>
+                    <p>Carica i PDF dell'archivio e collega la casella Outlook aziendale. I dati restano isolati per azienda: nessun documento è visibile ad altri.</p>
+                </div>
+                <div class="step">
+                    <span class="step-num">02</span>
+                    <h3>Indicizzazione automatica</h3>
+                    <p>Sentia legge e indicizza tutto in autonomia, combinando ricerca semantica e testuale. I nuovi documenti e le nuove email entrano nell'indice da soli.</p>
+                </div>
+                <div class="step">
+                    <span class="step-num">03</span>
+                    <h3>Chiedi in chat</h3>
+                    <p>Fai domande come le faresti a un collega: importi, scadenze, fornitori, movimenti. Ogni risposta indica documento e pagina di provenienza.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ===================== PREZZI ===================== -->
+    <section class="section" id="prezzi">
+        <div class="wrap">
+            <p class="section-eyebrow">Prezzi</p>
+            <h2 class="section-title">Un piano per ogni ufficio</h2>
+            <p class="section-sub">
+                Prezzo mensile per azienda, tutto incluso. Puoi cambiare piano o disdire in qualsiasi momento.
+            </p>
+
+            <div class="pricing-grid">
+                <div class="price-card">
+                    <h3 class="price-name">Starter</h3>
+                    <p class="price-desc">Per iniziare con l'archivio essenziale.</p>
+                    <div class="price-amount">
+                        <span class="price-value">79&nbsp;€</span>
+                        <span class="price-period">/ mese</span>
+                    </div>
+                    <ul class="price-features">
+                        <li><span class="mono">500</span> documenti indicizzati</li>
+                        <li><span class="mono">1</span> inbox Outlook collegata</li>
+                        <li>Sincronizzazione email: ultimi <span class="mono">30</span> giorni</li>
+                        <li>Risposte con fonte e pagina</li>
+                    </ul>
+                    <!-- TODO Stripe: sostituire con il Payment Link del piano Starter -->
+                    <a class="btn-ghost btn-block" href="https://buy.stripe.com/9B67sMg3ifeecHp0yRdMI02">Scegli Starter</a>
+                </div>
+
+                <div class="price-card is-featured">
+                    <span class="price-flag">Consigliato</span>
+                    <h3 class="price-name">Business</h3>
+                    <p class="price-desc">Per uffici strutturati con più caselle e archivi ampi.</p>
+                    <div class="price-amount">
+                        <span class="price-value">99&nbsp;€</span>
+                        <span class="price-period">/ mese</span>
+                    </div>
+                    <ul class="price-features">
+                        <li><span class="mono">2.500</span> documenti indicizzati</li>
+                        <li>Fino a <span class="mono">3</span> inbox Outlook collegate</li>
+                        <li>Sincronizzazione email: ultimi <span class="mono">6</span> mesi</li>
+                        <li>Risposte con fonte e pagina</li>
+                    </ul>
+                    <!-- TODO Stripe: sostituire con il Payment Link del piano Business -->
+                    <a class="btn-primary btn-block" href="https://buy.stripe.com/8x2cN68AQfee22L2GZdMI01">Scegli Business</a>
+                </div>
+
+                <div class="price-card is-disabled" aria-disabled="true">
+                    <span class="price-soon">Coming soon</span>
+                    <h3 class="price-name">Enterprise</h3>
+                    <p class="price-desc">Per organizzazioni con esigenze su misura.</p>
+                </div>
+            </div>
+
+            <p class="pricing-note">Pagamento sicuro gestito da Stripe. Fatturazione mensile, IVA esclusa.</p>
+        </div>
+    </section>
+
+    <!-- ===================== FOOTER ===================== -->
+    <footer class="site-footer">
+        <div class="wrap">
+            <div class="footer-brand">
+                <span class="brand-mark">S</span>
+                <span>Sentia — ricerca AI su documenti aziendali</span>
+            </div>
+            <nav class="footer-links" aria-label="Footer">
+                <!-- <a href="mailto:info@sentia.app">info@sentia.app</a> -->
+                <a href="terms.html">Terms of Use</a>
+                <a href="privacy.html">Privacy Policy</a>
+            </nav>
+        </div>
+    </footer>
+
+</body>
+</html>

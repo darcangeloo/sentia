@@ -1,0 +1,540 @@
+/* ============================================================
+   SENTIA — Landing
+   Stessi token del prodotto (frontend/style.css). Copiati e non
+   importati: il CSS dell'app blocca lo scroll del body e impagina
+   una shell a griglia, qui serve una pagina che scorre.
+   La landing è volutamente scura e sobria: deve sembrare la porta
+   d'ingresso dello strumento, non un sito promozionale.
+   ============================================================ */
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  color-scheme: dark;
+
+  --bg-base:      #0f1211;
+  --bg-surface:   #161a19;
+  --bg-raised:    #1d2221;
+  --bg-inset:     #121615;
+  --bg-hover:     rgba(255, 255, 255, 0.035);
+
+  --primary:        #2f7d5d;
+  --primary-hover:  #38916c;
+  --primary-soft:   rgba(47, 125, 93, 0.14);
+  --primary-line:   rgba(47, 125, 93, 0.34);
+  --primary-text:   #6fbf98;
+
+  --text:      #e3e8e6;
+  --text-2:    #b0b9b6;
+  --text-3:    #8b9491;
+  --text-4:    #7d8784;
+
+  --border:        #262c2a;
+  --border-strong: #333b38;
+
+  --ok: #4f9e77;
+
+  --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.36);
+  --shadow-lg: 0 24px 56px rgba(0, 0, 0, 0.5);
+
+  --r-xs: 3px;
+  --r-sm: 5px;
+  --r-md: 7px;
+  --r-lg: 10px;
+  --r-full: 999px;
+
+  --font:      'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-disp: 'Fraunces', Georgia, serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --t-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --t-base: 180ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  --page-w: 1080px;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html {
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font);
+  background: var(--bg-base);
+  color: var(--text);
+  line-height: 1.5;
+  font-size: 0.9375rem;
+  min-height: 100vh;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+:focus { outline: none; }
+:focus-visible {
+  outline: 2px solid var(--primary-text);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+a { color: var(--primary-text); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.wrap {
+  max-width: var(--page-w);
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+/* === Bottoni: stesse primitive dell'app === */
+.btn-primary,
+.btn-ghost {
+  font-family: inherit;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  padding: 10px 18px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast), transform var(--t-fast);
+}
+.btn-primary:active, .btn-ghost:active { transform: translateY(1px); }
+.btn-primary { background: var(--primary); color: #f2f7f5; }
+.btn-primary:hover { background: var(--primary-hover); text-decoration: none; }
+.btn-ghost { background: transparent; color: var(--text-2); border-color: var(--border); }
+.btn-ghost:hover { background: var(--bg-hover); color: var(--text); border-color: var(--border-strong); text-decoration: none; }
+.btn-block { width: 100%; }
+
+/* ============================================================
+   HEADER
+   ============================================================ */
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: rgba(15, 18, 17, 0.86);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border);
+}
+.site-header .wrap {
+  display: flex; align-items: center; justify-content: space-between;
+  height: 58px;
+}
+.brand { display: inline-flex; align-items: center; gap: 9px; color: var(--text); }
+.brand:hover { text-decoration: none; }
+.brand-mark {
+  width: 27px; height: 27px;
+  background: var(--primary);
+  color: #0f1211;
+  border-radius: var(--r-sm);
+  display: grid; place-items: center;
+  font-family: var(--font-disp);
+  font-weight: 600; font-size: 14px;
+}
+.brand-name {
+  font-family: var(--font-disp);
+  font-size: 1.125rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.header-nav { display: flex; align-items: center; gap: 22px; }
+.header-nav a { color: var(--text-3); font-size: 0.875rem; transition: color var(--t-fast); }
+.header-nav a:hover { color: var(--text); text-decoration: none; }
+.header-nav .btn-primary { font-size: 0.875rem; padding: 7px 14px; }
+
+/* ============================================================
+   HERO
+   ============================================================ */
+.hero { padding: 88px 0 96px; position: relative; overflow: hidden; }
+/* Stesso alone del login dell'app: un solo punto di profondità, non un gradiente */
+.hero::before {
+  content: '';
+  position: absolute;
+  top: -35%; left: 50%;
+  width: 900px; height: 620px;
+  transform: translateX(-50%);
+  background: radial-gradient(ellipse at center, rgba(47, 125, 93, 0.10), transparent 65%);
+  pointer-events: none;
+}
+.hero .wrap {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  gap: 56px;
+  align-items: center;
+}
+
+.hero-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--primary-text);
+  margin-bottom: 18px;
+}
+.hero h1 {
+  font-family: var(--font-disp);
+  font-size: clamp(2rem, 4.4vw, 3.1rem);
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  line-height: 1.12;
+  margin-bottom: 18px;
+  max-width: 15ch;
+}
+.hero-sub {
+  color: var(--text-2);
+  font-size: 1.0625rem;
+  line-height: 1.65;
+  max-width: 46ch;
+  margin-bottom: 30px;
+}
+.hero-ctas { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 22px; }
+.hero-note {
+  font-size: 0.75rem;
+  color: var(--text-4);
+}
+
+/* --- Vignetta prodotto: una risposta con le sue fonti, impaginata
+       con gli stessi pattern dell'app. È la tesi della pagina:
+       ogni risposta dice da dove viene. --- */
+.demo-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+.demo-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.demo-head-title { font-size: 0.8125rem; font-weight: 600; color: var(--text-2); }
+.demo-head-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--primary-text);
+  background: var(--primary-soft);
+  border-radius: var(--r-full);
+  padding: 1px 8px;
+  margin-left: auto;
+}
+.demo-body { padding: 16px 16px 14px; }
+
+.demo-q {
+  font-size: 0.875rem;
+  color: var(--text-2);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 9px 12px;
+  margin-bottom: 14px;
+}
+.demo-q::before {
+  content: 'Domanda';
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-4);
+  margin-bottom: 3px;
+}
+
+.demo-a { font-size: 0.875rem; color: var(--text); line-height: 1.6; }
+.demo-a p { margin-bottom: 10px; }
+
+.demo-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; margin-bottom: 12px; }
+.demo-table th {
+  text-align: left;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-4);
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border-strong);
+  white-space: nowrap;
+}
+.demo-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-2);
+}
+.demo-table tr:last-child td { border-bottom: none; }
+.demo-table .num {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.demo-sources {
+  border-top: 1px solid var(--border);
+  padding: 10px 16px 14px;
+  background: var(--bg-inset);
+}
+.demo-sources-label {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-4);
+  margin-bottom: 8px;
+}
+.demo-source {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 0;
+}
+.demo-source-ordinal { font-family: var(--font-mono); font-size: 10px; color: var(--text-4); }
+.demo-source-file {
+  flex: 1; min-width: 0;
+  font-size: 0.75rem;
+  color: var(--text-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.demo-source-page {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-3);
+  background: var(--bg-raised);
+  border-radius: var(--r-xs);
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+.demo-source-kind {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--primary-text);
+  background: var(--primary-soft);
+  border: 1px solid var(--primary-line);
+  border-radius: var(--r-xs);
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+
+/* ============================================================
+   SEZIONI
+   ============================================================ */
+.section { padding: 84px 0; border-top: 1px solid var(--border); }
+
+.section-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-4);
+  margin-bottom: 12px;
+}
+.section-title {
+  font-family: var(--font-disp);
+  font-size: clamp(1.5rem, 3vw, 2rem);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  margin-bottom: 12px;
+}
+.section-sub {
+  color: var(--text-3);
+  font-size: 1rem;
+  line-height: 1.6;
+  max-width: 56ch;
+  margin-bottom: 44px;
+}
+
+/* --- Come funziona: sequenza vera, quindi numerata. Numeri in mono
+       come tutti i dati del prodotto. --- */
+.steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+.step {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 22px;
+  transition: border-color var(--t-fast);
+}
+.step:hover { border-color: var(--border-strong); }
+.step-num {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--primary-text);
+  background: var(--primary-soft);
+  border: 1px solid var(--primary-line);
+  border-radius: var(--r-xs);
+  padding: 2px 7px;
+  display: inline-block;
+  margin-bottom: 14px;
+}
+.step h3 { font-size: 1rem; font-weight: 600; margin-bottom: 8px; }
+.step p { font-size: 0.875rem; color: var(--text-3); line-height: 1.6; }
+
+/* ============================================================
+   PRICING
+   ============================================================ */
+.pricing-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  align-items: stretch;
+}
+.price-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 26px 24px;
+  transition: border-color var(--t-fast);
+}
+.price-card:hover { border-color: var(--border-strong); }
+.price-card.is-featured { border-color: var(--primary-line); }
+.price-card.is-featured:hover { border-color: var(--primary); }
+
+.price-flag {
+  position: absolute;
+  top: -11px; left: 22px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #0f1211;
+  background: var(--primary);
+  border-radius: var(--r-full);
+  padding: 3px 10px;
+}
+
+.price-name { font-size: 1rem; font-weight: 600; margin-bottom: 4px; }
+.price-desc { font-size: 0.8125rem; color: var(--text-3); margin-bottom: 18px; min-height: 2.6em; }
+
+.price-amount { display: flex; align-items: baseline; gap: 6px; margin-bottom: 20px; }
+.price-value {
+  font-family: var(--font-disp);
+  font-size: 2.25rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+.price-period { font-size: 0.8125rem; color: var(--text-4); }
+
+.price-features {
+  list-style: none;
+  display: flex; flex-direction: column; gap: 9px;
+  font-size: 0.875rem;
+  color: var(--text-2);
+  margin-bottom: 24px;
+  flex: 1;
+}
+.price-features li { display: flex; gap: 9px; align-items: baseline; }
+.price-features li::before {
+  content: '';
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--ok);
+  flex-shrink: 0;
+  transform: translateY(-2px);
+}
+.price-features .mono { font-family: var(--font-mono); font-size: 0.8125rem; color: var(--text); }
+
+/* Enterprise: presente ma spenta. Niente prezzo, niente azione. */
+.price-card.is-disabled {
+  pointer-events: none;
+  user-select: none;
+}
+.price-card.is-disabled > * { opacity: 0.38; }
+.price-card.is-disabled .price-soon { opacity: 1; }
+.price-soon {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-full);
+  padding: 3px 10px;
+  align-self: flex-start;
+  margin-bottom: 14px;
+}
+
+.pricing-note {
+  margin-top: 22px;
+  font-size: 0.75rem;
+  color: var(--text-4);
+}
+
+/* ============================================================
+   FOOTER
+   ============================================================ */
+.site-footer {
+  border-top: 1px solid var(--border);
+  padding: 36px 0 44px;
+}
+.site-footer .wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+.footer-brand { display: flex; align-items: center; gap: 9px; color: var(--text-3); font-size: 0.8125rem; }
+.footer-brand .brand-mark { width: 22px; height: 22px; font-size: 12px; }
+.footer-links { display: flex; flex-wrap: wrap; gap: 20px; font-size: 0.8125rem; }
+.footer-links a { color: var(--text-3); transition: color var(--t-fast); }
+.footer-links a:hover { color: var(--text); text-decoration: none; }
+
+/* ============================================================
+   PAGINE LEGALI
+   ============================================================ */
+.legal { padding: 64px 0 96px; max-width: 720px; }
+.legal h1 {
+  font-family: var(--font-disp);
+  font-size: 1.75rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  margin-bottom: 8px;
+}
+.legal-updated {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-4);
+  margin-bottom: 36px;
+}
+.legal h2 { font-size: 1.0625rem; font-weight: 600; margin: 32px 0 10px; }
+.legal p, .legal li { font-size: 0.9375rem; color: var(--text-2); line-height: 1.7; margin-bottom: 12px; }
+.legal ul { margin-left: 1.2em; }
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 900px) {
+  .hero { padding: 56px 0 64px; }
+  .hero .wrap { grid-template-columns: 1fr; gap: 40px; }
+  .hero h1 { max-width: none; }
+  .section { padding: 60px 0; }
+  .steps, .pricing-grid { grid-template-columns: 1fr; }
+  .price-card.is-featured { order: -1; }
+  .price-desc { min-height: 0; }
+}
+
+@media (max-width: 520px) {
+  .header-nav { gap: 14px; }
+  .header-nav .nav-link-how { display: none; }
+  .hero-ctas .btn-primary, .hero-ctas .btn-ghost { width: 100%; }
+}

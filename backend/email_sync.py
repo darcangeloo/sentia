@@ -238,6 +238,7 @@ async def _index_message(db: AsyncSession, account: EmailAccount, access_token: 
         status="processing",
         source="email",
         source_ref=message_id,
+        email_account_id=account.id,
     )
     db.add(doc)
     await db.commit()
@@ -270,11 +271,16 @@ async def _index_message(db: AsyncSession, account: EmailAccount, access_token: 
 
 
 async def _remove_deleted_message(db: AsyncSession, account: EmailAccount, message_id: str):
-    """Rimuove documento e chunk di un messaggio cancellato dalla mailbox."""
+    """Rimuove documento e chunk di un messaggio cancellato dalla mailbox.
+
+    Il filtro include email_account_id: con più caselle collegate, il delta di
+    una mailbox non deve poter rimuovere un documento importato da un'altra.
+    """
     result = await db.execute(
         select(Document).filter(
             Document.company_id == account.company_id,
             Document.source_ref == message_id,
+            Document.email_account_id == account.id,
         )
     )
     doc = result.scalars().first()
@@ -290,14 +296,25 @@ async def _remove_deleted_message(db: AsyncSession, account: EmailAccount, messa
 
 
 async def _run_initial_import(db: AsyncSession, account: EmailAccount):
-    """Import dello storico via /me/messages, con tetto sul numero di messaggi."""
+    """Import dello storico via /me/messages, con tetto sul numero di messaggi.
+
+    La finestra temporale dipende dal piano dell'azienda (30 giorni Starter,
+    6 mesi Business, illimitato Enterprise) ed è applicata come filtro Graph
+    server-side ($filter=receivedDateTime ge ...), non come scarto post-fetch:
+    le email fuori finestra non vengono nemmeno scaricate. Le nuove email in
+    tempo reale (delta query) restano fuori da questo filtro, per tutti i piani.
+    """
+    from backend.plans import load_plan, history_since_iso
+
     access_token = await get_valid_access_token(db, account)
+    plan = await load_plan(db, account.company_id)
+    since_iso = history_since_iso(plan)
     imported = 0
     seen = 0
     url = None
 
     while seen < settings.OUTLOOK_INITIAL_IMPORT_MAX_MESSAGES:
-        page = await outlook.list_messages_page(access_token, url)
+        page = await outlook.list_messages_page(access_token, url, since_iso=since_iso)
         for message in page.get("value", []):
             if seen >= settings.OUTLOOK_INITIAL_IMPORT_MAX_MESSAGES:
                 break

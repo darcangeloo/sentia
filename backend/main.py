@@ -39,6 +39,8 @@ from backend.crypto import encrypt_text, decrypt_text
 from backend.audit import log_audit
 from backend.llm import validate_credentials
 from backend import storage
+from backend import plans
+from backend.plans import PlanLimitError
 
 # === Configurazione Logging ===
 settings = get_settings()
@@ -136,6 +138,26 @@ async def security_headers_middleware(request: Request, call_next):
     # quindi innocuo in sviluppo locale.
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
+
+
+@app.exception_handler(PlanLimitError)
+async def plan_limit_exception_handler(request: Request, exc: PlanLimitError):
+    """Limite di piano superato → HTTP 409 con messaggio friendly (non 403/500).
+
+    Il corpo porta il messaggio che invita all'upgrade e i metadati del limite,
+    così il frontend può mostrare un avviso mirato ed evidenziare la barra piano.
+    """
+    return JSONResponse(
+        status_code=409,
+        content={
+            "detail": exc.message,
+            "error": "plan_limit_exceeded",
+            "plan": exc.plan.value,
+            "limit": exc.limit,
+            "current": exc.current,
+            "kind": exc.kind,
+        },
+    )
 
 
 @app.exception_handler(Exception)
@@ -482,6 +504,19 @@ async def document_upload(
             "message": "Documento già presente: è stato riutilizzato quello esistente.",
             "document_id": str(duplicate.id),
         }
+
+    # Limite di piano sui documenti manuali indicizzati. Verificato solo dopo
+    # la deduplica (un ricaricamento dello stesso file non consuma quota) e
+    # prima di archiviare/indicizzare. In caso di downgrade con documenti già
+    # oltre il nuovo limite: nuovi upload bloccati, i dati esistenti restano.
+    plan = await plans.load_plan(db, tenant["company_id"])
+    try:
+        await plans.assert_document_quota(db, uuid.UUID(tenant["company_id"]), plan)
+    except PlanLimitError:
+        # Il file di lavorazione appena scritto va rimosso: l'upload è rifiutato.
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise
 
     # Il file appena scritto è materiale di lavorazione: serve per validare,
     # calcolare l'hash e — subito dopo — indicizzare. La copia definitiva va
@@ -1160,6 +1195,32 @@ def _require_outlook_configured():
         )
 
 
+@app.get("/v1/plan")
+async def get_plan(tenant: dict = Depends(get_current_tenant), db: AsyncSession = Depends(get_db)):
+    """Piano corrente dell'azienda e utilizzo vs limiti, per la barra di stato UI.
+
+    company_id proviene sempre dal JWT (get_current_tenant), mai da input client.
+    limit=None significa illimitato (Enterprise).
+    """
+    company_uuid = uuid.UUID(tenant["company_id"])
+    plan = await plans.load_plan(db, company_uuid)
+
+    docs_used = await plans.count_documents(db, company_uuid)
+    inbox_used = await plans.count_inboxes(db, company_uuid)
+
+    return {
+        "plan": plan.value,
+        "plan_label": plans.plan_label(plan),
+        "documents": {"used": docs_used, "limit": plans.document_limit(plan)},
+        "inboxes": {"used": inbox_used, "limit": plans.inbox_limit(plan)},
+        "history_label": {
+            "starter": "ultimi 30 giorni",
+            "business": "ultimi 6 mesi",
+            "enterprise": "storico completo",
+        }[plan.value],
+    }
+
+
 @app.get("/v1/integrations/outlook/authorize")
 async def outlook_authorize(tenant: dict = Depends(get_current_tenant)):
     """Costruisce l'URL di autorizzazione Microsoft per il tenant corrente.
@@ -1246,41 +1307,33 @@ async def outlook_callback(
     now = _utcnow_naive()
     expires_at = now + timedelta(seconds=int(tokens.get("expires_in", 3600)))
 
-    # Una mailbox per azienda (indice unico su company_id): se esiste già
-    # un account lo si aggiorna; se la mailbox è diversa si riparte da zero
-    # con delta e import iniziale.
-    result = await db.execute(select(EmailAccount).filter(EmailAccount.company_id == company_uuid))
+    # Multi-inbox: le caselle si identificano per (company_id, email_address).
+    # Ricollegare la STESSA casella aggiorna i token in loco (nessun import da
+    # capo, nessuna cancellazione). Una casella NUOVA è soggetta al limite di
+    # inbox del piano: se superato, il flusso si chiude con outcome 'limit'.
+    result = await db.execute(
+        select(EmailAccount).filter(
+            EmailAccount.company_id == company_uuid,
+            EmailAccount.email_address == email_address,
+        )
+    )
     account = result.scalars().first()
 
     if account:
-        mailbox_changed = account.email_address != email_address
         account.user_id = user_uuid
-        account.email_address = email_address
         account.encrypted_access_token = encrypt_key(tokens["access_token"])
         account.encrypted_refresh_token = encrypt_key(tokens["refresh_token"])
         account.token_expires_at = expires_at
         account.status = "connected"
         account.error_message = None
         account.updated_at = now
-        if mailbox_changed:
-            account.delta_link = None
-            account.initial_import_done = False
-            # Mailbox diversa: le email della casella precedente non vanno
-            # lasciate nell'indice (resterebbero per sempre: la deduplica per
-            # source_ref non le tocca e il delta della nuova casella nemmeno).
-            await db.execute(
-                sqlalchemy_text("""
-                    DELETE FROM chunks WHERE document_id IN (
-                        SELECT id FROM documents WHERE company_id = :company_id AND source = 'email'
-                    )
-                """),
-                {"company_id": str(company_uuid)},
-            )
-            await db.execute(
-                sqlalchemy_text("DELETE FROM documents WHERE company_id = :company_id AND source = 'email'"),
-                {"company_id": str(company_uuid)},
-            )
     else:
+        plan = await plans.load_plan(db, company_uuid)
+        try:
+            await plans.assert_inbox_quota(db, company_uuid, plan)
+        except PlanLimitError:
+            logger.info(f"Collegamento Outlook rifiutato per limite piano ({plan.value}) azienda {company_uuid}")
+            return _redirect("limit")
         account = EmailAccount(
             id=uuid.uuid4(),
             company_id=company_uuid,
@@ -1311,98 +1364,177 @@ async def outlook_callback(
 
 @app.get("/v1/integrations/outlook/status")
 async def outlook_status(tenant: dict = Depends(get_current_tenant), db: AsyncSession = Depends(get_db)):
-    """Stato dell'integrazione Outlook per il frontend (sezione Impostazioni)."""
+    """Stato dell'integrazione Outlook per il frontend (sezione Impostazioni).
+
+    Multi-inbox: restituisce l'elenco delle caselle collegate con, per ciascuna,
+    il conteggio delle email indicizzate con successo. `limit`/`used`/`can_add`
+    riflettono il piano dell'azienda per pilotare la UI (pulsante 'aggiungi
+    casella' nascosto al raggiungimento del limite).
+    """
     company_uuid = uuid.UUID(tenant["company_id"])
-    result = await db.execute(select(EmailAccount).filter(EmailAccount.company_id == company_uuid))
-    account = result.scalars().first()
-
-    if not account:
-        return {"configured": settings.outlook_enabled, "connected": False}
-
-    # Solo le email indicizzate con successo: quelle in errore o ancora in
-    # lavorazione non vanno mostrate come disponibili all'assistente.
-    count_result = await db.execute(
-        sqlalchemy_text(
-            "SELECT COUNT(*) FROM documents "
-            "WHERE company_id = :company_id AND source = 'email' AND status = 'ready'"
-        ),
-        {"company_id": str(company_uuid)},
+    result = await db.execute(
+        select(EmailAccount)
+        .filter(EmailAccount.company_id == company_uuid)
+        .order_by(EmailAccount.created_at.asc())
     )
-    email_count = count_result.scalar() or 0
+    accounts = result.scalars().all()
+
+    # Conteggio email pronte per casella, in un'unica query (evita N round-trip).
+    counts: dict[str, int] = {}
+    if accounts:
+        count_rows = await db.execute(
+            sqlalchemy_text(
+                "SELECT email_account_id, COUNT(*) FROM documents "
+                "WHERE company_id = :company_id AND source = 'email' AND status = 'ready' "
+                "AND email_account_id IS NOT NULL GROUP BY email_account_id"
+            ),
+            {"company_id": str(company_uuid)},
+        )
+        counts = {str(row[0]): int(row[1]) for row in count_rows}
+
+    plan = await plans.load_plan(db, company_uuid)
+    limit = plans.inbox_limit(plan)
+    used = sum(1 for a in accounts if a.status != "disconnected")
+
+    account_list = [
+        {
+            "id": str(a.id),
+            "email_address": a.email_address,
+            "status": a.status,
+            "connected": a.status != "disconnected",
+            "last_sync_at": a.last_sync_at.isoformat() if a.last_sync_at else None,
+            "initial_import_done": a.initial_import_done,
+            "error_message": a.error_message,
+            "email_count": counts.get(str(a.id), 0),
+        }
+        for a in accounts
+    ]
 
     return {
         "configured": settings.outlook_enabled,
-        "connected": account.status != "disconnected",
-        "status": account.status,
-        "email_address": account.email_address,
-        "last_sync_at": account.last_sync_at.isoformat() if account.last_sync_at else None,
-        "initial_import_done": account.initial_import_done,
-        "error_message": account.error_message,
-        "email_count": email_count,
+        "connected": any(a["connected"] for a in account_list),
+        "accounts": account_list,
+        "plan": plan.value,
+        "inbox_limit": limit,
+        "inbox_used": used,
+        "can_add_inbox": limit is None or used < limit,
     }
+
+
+def _resolve_company_account(accounts, account_id: str | None):
+    """Seleziona una casella dell'azienda per id, o l'unica se account_id è assente.
+
+    Ritorna None se l'id non appartiene all'azienda o se, in assenza di id, le
+    caselle sono più di una (scelta ambigua). Isola il tenant: cerca solo tra
+    le caselle già filtrate per company_id del JWT.
+    """
+    if account_id:
+        return next((a for a in accounts if str(a.id) == account_id), None)
+    return accounts[0] if len(accounts) == 1 else None
 
 
 @app.post("/v1/integrations/outlook/sync")
 async def outlook_sync_now(
     background_tasks: BackgroundTasks,
+    account_id: str | None = None,
     tenant: dict = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
 ):
-    """Avvia manualmente un sync (in background), senza aspettare il poller."""
+    """Avvia manualmente un sync in background.
+
+    Con `account_id` sincronizza quella casella; senza, sincronizza tutte le
+    caselle collegate dell'azienda.
+    """
     _require_outlook_configured()
     from backend.email_sync import sync_account
 
     company_uuid = uuid.UUID(tenant["company_id"])
     result = await db.execute(select(EmailAccount).filter(EmailAccount.company_id == company_uuid))
-    account = result.scalars().first()
-    if not account:
+    accounts = result.scalars().all()
+    if not accounts:
         raise HTTPException(status_code=404, detail="Nessun account Outlook collegato")
-    if account.status == "disconnected":
-        raise HTTPException(status_code=409, detail="Account disconnesso: ricollega Outlook per riprendere il sync")
-    if account.status == "syncing":
-        return {"status": "already_syncing", "message": "Sincronizzazione già in corso."}
 
-    background_tasks.add_task(sync_account, str(account.id))
-    return {"status": "success", "message": "Sincronizzazione avviata."}
+    if account_id:
+        target = _resolve_company_account(accounts, account_id)
+        if not target:
+            raise HTTPException(status_code=404, detail="Casella non trovata")
+        targets = [target]
+    else:
+        targets = accounts
+
+    started = 0
+    for account in targets:
+        if account.status in ("disconnected", "syncing"):
+            continue
+        background_tasks.add_task(sync_account, str(account.id))
+        started += 1
+
+    if started == 0:
+        return {"status": "already_syncing", "message": "Nessuna casella da sincronizzare (già in corso o disconnesse)."}
+    return {"status": "success", "message": "Sincronizzazione avviata.", "started": started}
 
 
 @app.delete("/v1/integrations/outlook")
 async def outlook_disconnect(
+    account_id: str | None = None,
     purge: bool = True,
     tenant: dict = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
 ):
-    """Disconnette Outlook: elimina i token salvati e ferma il sync.
+    """Disconnette una casella Outlook: elimina i token salvati e ferma il sync.
 
-    Di default (purge=true) rimuove anche le email già indicizzate
-    (documenti source='email' e relativi chunk): disconnettere significa
-    togliere i dati della casella dall'assistente. Con purge=false i
-    contenuti indicizzati restano consultabili.
+    `account_id` indica quale casella disconnettere; se l'azienda ne ha una
+    sola può essere omesso. Di default (purge=true) rimuove anche le email
+    indicizzate di QUELLA casella (documenti source='email' con relativo
+    email_account_id e i loro chunk): le altre caselle non vengono toccate.
+    Con purge=false i contenuti restano consultabili.
     """
     company_uuid = uuid.UUID(tenant["company_id"])
     result = await db.execute(select(EmailAccount).filter(EmailAccount.company_id == company_uuid))
-    account = result.scalars().first()
-    if not account:
+    accounts = result.scalars().all()
+    if not accounts:
         raise HTTPException(status_code=404, detail="Nessun account Outlook collegato")
 
-    await db.delete(account)
+    account = _resolve_company_account(accounts, account_id)
+    if not account:
+        raise HTTPException(status_code=400, detail="Specifica quale casella disconnettere (account_id)")
+
+    account_uuid = account.id
 
     if purge:
+        # Purge per-casella: solo i documenti email con questo email_account_id.
         await db.execute(
             sqlalchemy_text("""
                 DELETE FROM chunks WHERE document_id IN (
-                    SELECT id FROM documents WHERE company_id = :company_id AND source = 'email'
+                    SELECT id FROM documents
+                    WHERE company_id = :company_id AND source = 'email' AND email_account_id = :account_id
                 )
             """),
-            {"company_id": str(company_uuid)},
+            {"company_id": str(company_uuid), "account_id": str(account_uuid)},
         )
         await db.execute(
-            sqlalchemy_text("DELETE FROM documents WHERE company_id = :company_id AND source = 'email'"),
-            {"company_id": str(company_uuid)},
+            sqlalchemy_text(
+                "DELETE FROM documents WHERE company_id = :company_id "
+                "AND source = 'email' AND email_account_id = :account_id"
+            ),
+            {"company_id": str(company_uuid), "account_id": str(account_uuid)},
         )
 
+    # La FK documents.email_account_id è ON DELETE CASCADE: eventuali documenti
+    # residui (purge=false) perderebbero la riga account. Con purge=false li si
+    # sgancia mantenendoli consultabili.
+    if not purge:
+        await db.execute(
+            sqlalchemy_text(
+                "UPDATE documents SET email_account_id = NULL "
+                "WHERE company_id = :company_id AND email_account_id = :account_id"
+            ),
+            {"company_id": str(company_uuid), "account_id": str(account_uuid)},
+        )
+
+    await db.delete(account)
     await db.commit()
-    logger.info(f"Outlook disconnesso per l'azienda {company_uuid} (purge={purge})")
+    logger.info(f"Casella Outlook {account_uuid} disconnessa per azienda {company_uuid} (purge={purge})")
     return {"status": "success"}
 
 

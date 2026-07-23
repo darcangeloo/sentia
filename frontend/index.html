@@ -237,6 +237,39 @@
 
                 <div class="settings-view-content">
 
+                    <!-- ---- Piano e utilizzo ---- -->
+                    <div class="section-label settings-section-label"><span>Piano</span></div>
+                    <div class="plan-card" id="plan-card">
+                        <div class="plan-card-header">
+                            <div class="plan-title">
+                                <h3 id="plan-name">—</h3>
+                                <span class="plan-history" id="plan-history"></span>
+                            </div>
+                            <span class="plan-badge" id="plan-badge">—</span>
+                        </div>
+                        <div class="plan-meters">
+                            <div class="plan-meter" id="plan-meter-documents">
+                                <div class="plan-meter-head">
+                                    <span class="plan-meter-label">Documenti indicizzati</span>
+                                    <span class="plan-meter-value" id="plan-documents-value">—</span>
+                                </div>
+                                <div class="plan-meter-track">
+                                    <div class="plan-meter-fill" id="plan-documents-fill"></div>
+                                </div>
+                            </div>
+                            <div class="plan-meter" id="plan-meter-inboxes">
+                                <div class="plan-meter-head">
+                                    <span class="plan-meter-label">Caselle Outlook collegate</span>
+                                    <span class="plan-meter-value" id="plan-inboxes-value">—</span>
+                                </div>
+                                <div class="plan-meter-track">
+                                    <div class="plan-meter-fill" id="plan-inboxes-fill"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <p class="plan-hint hidden" id="plan-hint" role="status"></p>
+                    </div>
+
                     <!-- ---- Integrazioni email ---- -->
                     <div class="section-label settings-section-label"><span>Integrazioni email</span></div>
                     <div class="provider-grid">
@@ -253,16 +286,13 @@
                                     Collega la casella Outlook aziendale: le email vengono indicizzate
                                     e diventano interrogabili in chat, come i documenti caricati.
                                 </p>
-                                <div class="integration-meta hidden" id="outlook-meta">
-                                    <div><span class="integration-meta-label">Casella Microsoft</span><span id="outlook-email">—</span></div>
-                                    <div><span class="integration-meta-label">Ultimo sync</span><span id="outlook-last-sync">—</span></div>
-                                    <div><span class="integration-meta-label">Email indicizzate</span><span id="outlook-count">0</span></div>
-                                </div>
+                                <!-- Una riga per casella collegata (multi-inbox: 1 Starter, 3 Business, illimitate Enterprise) -->
+                                <div class="inbox-list hidden" id="outlook-accounts"></div>
                                 <p class="integration-error hidden" id="outlook-error" role="alert"></p>
                                 <div class="provider-card-footer">
                                     <button class="btn-primary btn-small" id="btn-connect-outlook">Collega Outlook</button>
-                                    <button class="btn-ghost btn-small hidden" id="btn-sync-outlook">Sincronizza ora</button>
-                                    <button class="btn-ghost btn-small hidden" id="btn-disconnect-outlook">Disconnetti</button>
+                                    <button class="btn-ghost btn-small hidden" id="btn-sync-outlook">Sincronizza tutte</button>
+                                    <span class="inbox-limit-note hidden" id="outlook-limit-note"></span>
                                 </div>
                             </div>
                         </div>

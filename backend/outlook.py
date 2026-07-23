@@ -135,7 +135,7 @@ async def get_me(access_token: str) -> dict:
     return await _graph_get(access_token, f"{GRAPH_BASE_URL}/me")
 
 
-async def list_messages_page(access_token: str, url: str | None = None) -> dict:
+async def list_messages_page(access_token: str, url: str | None = None, since_iso: str | None = None) -> dict:
     """Una pagina dei messaggi dell'inbox (import iniziale), più recenti per primi.
 
     Solo la posta in arrivo, coerente con il sync incrementale (delta query
@@ -143,14 +143,21 @@ async def list_messages_page(access_token: str, url: str | None = None) -> dict:
     gonfiando il numero di email indicizzate rispetto a ciò che l'utente vede.
     Il Prefer chiede a Graph il body già in testo semplice: evita di dover
     ripulire l'HTML lato nostro nella maggior parte dei casi.
+    `since_iso` (ISO 8601 UTC): se presente, limita lo storico a
+    receivedDateTime >= since_iso lato Graph, secondo la finestra del piano.
+    Applicato solo alla prima pagina: le pagine successive (@odata.nextLink)
+    portano già il filtro codificato.
     Returns: dict con 'value' (messaggi) e opzionale '@odata.nextLink'.
     """
     if url is None:
-        params = urlencode({
+        query = {
             "$select": _MESSAGE_SELECT,
             "$orderby": "receivedDateTime desc",
             "$top": "50",
-        })
+        }
+        if since_iso:
+            query["$filter"] = f"receivedDateTime ge {since_iso}"
+        params = urlencode(query)
         url = f"{GRAPH_BASE_URL}/me/mailFolders/inbox/messages?{params}"
     return await _graph_get(
         access_token, url,
