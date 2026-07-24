@@ -138,7 +138,7 @@ a:hover { text-decoration: underline; }
 .brand-mark {
   width: 27px; height: 27px;
   background: var(--primary);
-  color: #0f1211;
+  color: #d8e8de;
   border-radius: var(--r-sm);
   display: grid; place-items: center;
   font-family: var(--font-disp);
