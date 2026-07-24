@@ -339,7 +339,7 @@ select.form-input { cursor: pointer; appearance: none;
 .login-logo-icon {
   width: 32px; height: 32px;
   background: var(--primary);
-  color: #0f1211;
+  color: #d8e8de;
   border-radius: var(--r-md);
   display: grid; place-items: center;
   font-family: var(--font-disp);
@@ -408,7 +408,7 @@ select.form-input { cursor: pointer; appearance: none;
 .sidebar-logo {
   width: 26px; height: 26px;
   background: var(--primary);
-  color: #0f1211;
+  color: #d8e8de;
   border-radius: var(--r-sm);
   display: grid; place-items: center;
   font-family: var(--font-disp); font-weight: 600; font-size: 14px;
